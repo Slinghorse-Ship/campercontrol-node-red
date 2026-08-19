@@ -938,9 +938,19 @@ if (!state.func.includes('manualOn: ventilation.manualOn === true')) {
 // Temperaturseite bei den realen Messpunkten; eine Schichtungswarnung gehört
 // nicht mehr zum aktuellen Modell.
 const cleanEmbeddedDefaults = source => source.replace(
-  /(const DEFAULTS = |\|\| )(\{"version":4[^\n]*\})(;)/g,
+  /(const DEFAULTS = |\|\| )(\{"version":[45][^\n]*\})(;)/g,
   (match, prefix, json, suffix) => {
     const value = JSON.parse(json);
+    const genericQuickFallback = ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main'];
+    const genericQuick = value.ui && Array.isArray(value.ui.quickAccessIds) ? value.ui.quickAccessIds : null;
+    const legacyQuick = value.ui && Array.isArray(value.ui.quickAccessLightIds)
+      ? value.ui.quickAccessLightIds.map(id => id === 'high_beam' ? 'switch:high_beam_manual' : 'light:' + id)
+      : null;
+    value.version = 5;
+    value.ui = {
+      quickAccessIds: genericQuick || legacyQuick || genericQuickFallback,
+      externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false)
+    };
     delete value.security;
     value.access = { scope: 'local-network', unrestricted: true };
     value.temperatureSensors = Object.assign({}, value.temperatureSensors || {}, {
@@ -990,8 +1000,51 @@ settings.func = cleanEmbeddedDefaults(settings.func)
     "        cfg = sanitize(action.backup.config);\n        changed = true;\n        networkChanged = true;\n        notice = 'Konfiguration wiederhergestellt.';"
   );
 
-const defaultMatch = settings.func.match(/const DEFAULTS = (\{"version":4[^\n]*\});/);
-if (!defaultMatch) throw new Error('Bereinigte v4-Defaults nicht gefunden');
+if (!settings.func.includes('const sourceVersion = Number(value && value.version || 0);')) {
+  settings.func = replaceOnce(
+    settings.func,
+    "    const cfg = object(value) && Number(value.version) === 4 ? merge(DEFAULTS, value) : clone(DEFAULTS);\n    cfg.version = 4;",
+    `    const sourceVersion = Number(value && value.version || 0);
+    const source = object(value) && [4, 5].includes(sourceVersion) ? clone(value) : {};
+    source.ui = object(source.ui) ? source.ui : {};
+    if (!Array.isArray(source.ui.quickAccessIds) && Array.isArray(source.ui.quickAccessLightIds)) {
+        source.ui.quickAccessIds = source.ui.quickAccessLightIds.map(id => id === 'high_beam' ? 'switch:high_beam_manual' : 'light:' + id);
+    }
+    delete source.ui.quickAccessLightIds;
+    const cfg = merge(DEFAULTS, source);
+    cfg.version = 5;`,
+    'Migration des Schnellzugriffs von v4 auf v5'
+  );
+}
+
+if (!settings.func.includes("const quickFallback = ['switch:water_pump'")) {
+  settings.func = replaceOnce(
+    settings.func,
+    `    const quickAllowed = new Set([...DEFAULTS.lights.map(light => light.id), 'high_beam']);
+    const quickFallback = ['outside_front_white', 'outside_front_amber', 'inside_main', 'outside_right'];
+    const quickSeen = new Set();
+    const quickSource = cfg.ui && Array.isArray(cfg.ui.quickAccessLightIds) ? cfg.ui.quickAccessLightIds : quickFallback;
+    const quickAccessLightIds = quickSource.map(value => String(value)).filter(id => quickAllowed.has(id) && !quickSeen.has(id) && quickSeen.add(id)).slice(0, 4);
+    for (const id of quickFallback) if (quickAccessLightIds.length < 4 && !quickSeen.has(id)) { quickSeen.add(id); quickAccessLightIds.push(id); }
+    cfg.ui = { quickAccessLightIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };`,
+    `    const quickAllowed = new Set([
+        ...cfg.lights.map(light => 'light:' + light.id),
+        ...cfg.switches.map(item => 'switch:' + item.id),
+        'device:inverter', 'device:orion', 'device:indevolt_grid', 'device:heater', 'device:maxxfan',
+        ...(Array.isArray(cfg.scenes) ? cfg.scenes : []).filter(object).map(scene => 'scene:' + text(scene.id, '', 24).replace(/[^a-zA-Z0-9_-]/g, '_'))
+    ]);
+    const quickFallback = ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main'];
+    const quickSeen = new Set();
+    const quickSource = cfg.ui && Array.isArray(cfg.ui.quickAccessIds) ? cfg.ui.quickAccessIds : quickFallback;
+    const quickAccessIds = quickSource.map(value => String(value)).filter(id => quickAllowed.has(id) && !quickSeen.has(id) && quickSeen.add(id)).slice(0, 4);
+    for (const id of quickFallback) if (quickAccessIds.length < 4 && quickAllowed.has(id) && !quickSeen.has(id)) { quickSeen.add(id); quickAccessIds.push(id); }
+    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };`,
+    'Generische Schnellzugriff-Konfiguration'
+  );
+}
+
+const defaultMatch = settings.func.match(/const DEFAULTS = (\{"version":5[^\n]*\});/);
+if (!defaultMatch) throw new Error('Bereinigte v5-Defaults nicht gefunden');
 const defaultJson = defaultMatch[1];
 
 const apiState = get('31af354fc4963c6c');
@@ -1024,7 +1077,7 @@ else if (resource === 'history') {
     const points = (Array.isArray(history[resolution]) ? history[resolution] : []).filter(point => !since || point.timestamp >= since).slice(-5000);
     msg.payload = { ok: true, resolution, points };
 } else if (resource === 'backup') {
-    msg.payload = { ok: true, backup: { schema: 'campercontrol-config-v4', exportedAt: new Date().toISOString(), config: JSON.parse(JSON.stringify(cfg)) } };
+    msg.payload = { ok: true, backup: { schema: 'campercontrol-config-v5', exportedAt: new Date().toISOString(), config: JSON.parse(JSON.stringify(cfg)) } };
 } else { msg.statusCode = 404; msg.payload = { ok: false, error: 'resource_not_found' }; return msg; }
 msg.statusCode = 200;
 return msg;
@@ -1086,6 +1139,92 @@ state.func = state.func.replace(
   "network: { configuredTopology: cfg.network && cfg.network.topology || 'cerbo-ap', cerboAddress: cfg.network && cfg.network.cerboAddress || '172.24.24.1' },",
   "network: { configuredTopology: cfg.network && cfg.network.topology || 'cerbo-ap', cerboAddress: cfg.network && cfg.network.cerboAddress || '172.24.24.1', externalWifi: externalWifiStatus },"
 );
+
+if (!state.func.includes('const quickAccessOptions = [];')) {
+  state.func = replaceOnce(
+    state.func,
+    'const snapshot = {',
+    `const quickAccessOptions = [];
+const quickOptionById = {};
+const addQuickOption = option => {
+    if (!option || !option.id || quickOptionById[option.id]) return;
+    const clean = {
+        id: String(option.id), name: String(option.name || option.id), icon: String(option.icon || 'power'),
+        group: String(option.group || 'System'), kind: String(option.kind || 'toggle')
+    };
+    quickAccessOptions.push(clean);
+    quickOptionById[clean.id] = clean;
+};
+const quickLightIcons = {
+    outside_front_white: 'lightbar', outside_front_amber: 'warningbar', inside_main: 'bulb',
+    outside_right: 'right-light', outside_rear: 'down-light', outside_left: 'left-light'
+};
+for (const light of lights) addQuickOption({ id: 'light:' + light.id, name: light.name, icon: quickLightIcons[light.id] || 'bulb', group: 'Licht' });
+const quickSwitchIcons = { dc_outlets_left: 'outlet', water_pump: 'pump', high_beam_manual: 'highbeam', dc_outlets_right: 'outlet', starlink: 'satellite', maxxfan_power: 'fan' };
+for (const item of dcChannels) addQuickOption({ id: 'switch:' + item.id, name: item.name, icon: quickSwitchIcons[item.id] || 'plug', group: '12 V' });
+addQuickOption({ id: 'device:inverter', name: 'MultiPlus 230 V', icon: 'plug', group: 'Geräte' });
+addQuickOption({ id: 'device:orion', name: 'Orion XS', icon: 'battery', group: 'Geräte' });
+addQuickOption({ id: 'device:indevolt_grid', name: 'INDEVOLT Stromzufuhr', icon: 'plug', group: 'Geräte' });
+addQuickOption({ id: 'device:heater', name: cfg.devices.heaterName, icon: 'heater', group: 'Klima' });
+addQuickOption({ id: 'device:maxxfan', name: cfg.devices.fanName, icon: 'fan', group: 'Klima' });
+for (const scene of (cfg.scenes || []).filter(item => item.visible !== false)) addQuickOption({ id: 'scene:' + scene.id, name: scene.name, icon: 'home', group: 'Szenen', kind: 'action' });
+
+const quickFallback = ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main'];
+const quickAccessIds = cfg.ui && Array.isArray(cfg.ui.quickAccessIds) ? cfg.ui.quickAccessIds : quickFallback;
+const quickAccess = quickAccessIds.map(id => {
+    const option = quickOptionById[id];
+    if (!option) return null;
+    const result = Object.assign({ active: false, available: false, status: 'NICHT VERFÜGBAR', command: null }, option);
+    if (id.indexOf('light:') === 0) {
+        const light = lights.find(item => item.id === id.slice(6));
+        if (!light) return result;
+        result.active = light.on === true; result.available = light.online === true; result.status = result.active ? 'EIN' : 'AUS';
+        result.command = { target: 'starpower', action: 'set', value: result.active ? 0 : 1, channel: Number(light.channel) };
+    } else if (id.indexOf('switch:') === 0) {
+        const item = dcChannels.find(entry => entry.id === id.slice(7));
+        if (!item) return result;
+        result.active = item.on === true; result.available = item.online === true;
+        result.status = item.id === 'starlink' && result.active ? (starlinkOnline ? 'ONLINE' : 'VERBINDET') : (result.active ? 'EIN' : 'AUS');
+        result.command = item.id === 'water_pump'
+            ? { target: 'waterPump', action: 'set', value: !result.active }
+            : { target: 'starpower', action: 'set', value: result.active ? 0 : 1, channel: Number(item.channel) };
+    } else if (id === 'device:inverter') {
+        result.active = inverterOn; result.available = multiOnline; result.status = result.active ? '230 V EIN' : 'AUS';
+        result.command = { target: 'inverter', action: 'set', value: !result.active };
+    } else if (id === 'device:orion') {
+        result.active = orionModeNumber === 1; result.available = orionOnline; result.status = orionStateText;
+        result.command = { target: 'orion', action: 'set', value: !result.active };
+    } else if (id === 'device:indevolt_grid') {
+        result.active = shellyGridOn; result.available = shellyGridOnline; result.status = result.active ? 'FREIGEGEBEN' : 'GETRENNT';
+        result.command = { target: 'indevoltGrid', action: 'set', value: !result.active };
+    } else if (id === 'device:heater') {
+        result.active = heater.running === true || heater.cooling === true;
+        result.available = heater.serialReady === true && heater.cooling !== true;
+        result.status = heater.cooling ? 'NACHLAUF' : (heater.running ? 'HEIZT' : 'AUS');
+        result.command = { target: 'heater', action: heater.running ? 'stop' : 'start', value: null };
+    } else if (id === 'device:maxxfan') {
+        const fanOnline = now - Number(adapterFan.seen || 0) <= staleMs;
+        result.active = typeof adapterFan.on === 'boolean' ? adapterFan.on : Number(fanPowerChannel.state) === 1;
+        result.available = fanOnline; result.status = result.active ? Math.round(Number(adapterFan.speed || 0)) + ' %' : 'AUS';
+        result.command = { target: 'maxxfan', action: 'set', value: !result.active };
+    } else if (id.indexOf('scene:') === 0) {
+        const scene = (cfg.scenes || []).find(item => item.id === id.slice(6));
+        result.available = Boolean(scene); result.status = scene ? 'STARTEN' : 'NICHT VERFÜGBAR';
+        result.command = scene ? { target: 'scene', action: 'run', value: scene.id, sceneId: scene.id } : null;
+    }
+    return result;
+}).filter(Boolean);
+
+const snapshot = {`,
+    'Aufgelöste generische Schnellzugriffe im Snapshot'
+  );
+}
+if (state.func.includes('ui: { quickAccessLightIds:')) {
+  state.func = state.func.replace(
+    /ui: \{ quickAccessLightIds:[^\n]+\},/,
+    "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
+  );
+}
 
 const settingsUi = get('aec5cc044fa2963f');
 settingsUi.format = String(settingsUi.format || '')

@@ -53,6 +53,43 @@ check(!dashboard.includes('v-if="!detail"'), 'Untere Navigation bleibt auf Detai
 check(dashboard.includes("@click=\"detail='';page='home'\""), 'Navigation schließt Detailseiten explizit');
 check(dashboard.includes('.fs-detail-page{height:calc(100vh - 160px)!important'), 'Detailseiten reservieren Platz für die Navigation');
 
+// Schnellzugriff: vier generische, backendvalidierte Aktionen statt einer
+// fest verdrahteten Lichtauswahl. Alte v4-Lichtbelegungen werden migriert.
+const settingsFunction = get('47003434a27acbe7').func || '';
+const snapshotFunction = get('ada9353cc6ea4a4c').func || '';
+check(settingsFunction.includes('cfg.version = 5'), 'Konfigurationsschema ist v5');
+check(settingsFunction.includes('source.ui.quickAccessLightIds.map'), 'v4-Lichtbelegungen werden auf generische IDs migriert');
+check(settingsFunction.includes('cfg.ui = { quickAccessIds,'), 'Settings speichern generische Schnellzugriff-IDs');
+for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main']) {
+  check(settingsFunction.includes(id), `Generischer Standard-Schnellzugriff enthält ${id}`);
+}
+for (const target of ['device:inverter', 'device:orion', 'device:indevolt_grid', 'device:heater', 'device:maxxfan']) {
+  check(snapshotFunction.includes(target), `Schnellzugriff-Katalog enthält ${target}`);
+}
+check(snapshotFunction.includes('quickAccessOptions, externalWifiTileEnabled'), 'Snapshot veröffentlicht Auswahl, Katalog und aufgelöste Aktionen');
+check(snapshotFunction.includes("target: 'waterPump', action: 'set'"), 'Wasserpumpen-Schnellzugriff nutzt den validierten Router');
+check(snapshotFunction.includes("target: 'scene', action: 'run'"), 'Szenen sind als Schnellzugriff auswählbar');
+check(dashboard.includes('v-for="q in quickItems"'), 'Dashboard rendert generische Schnellzugriffe');
+check(dashboard.includes('quickActivate(q)'), 'Dashboard führt den vom Backend aufgelösten Befehl aus');
+check(dashboard.includes("settingsPatch({ui:{quickAccessIds:ids}})"), 'Dashboard speichert generische IDs');
+
+const legacyQuickStore = new Map([['camperConfig', {
+  version: 4,
+  ui: { quickAccessLightIds: ['inside_main', 'outside_front_amber', 'outside_right', 'high_beam'] },
+  mappings: { hardwareProfile: 'transit-highbeam-v2' }
+}]]);
+const legacyQuickFlow = {
+  get: key => legacyQuickStore.get(key),
+  set: (key, value) => legacyQuickStore.set(key, value)
+};
+const runSettings = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', settingsFunction);
+const migratedOutput = runSettings({ req: { method: 'GET' }, payload: {} }, legacyQuickFlow, {}, {}, {}, {});
+const migratedConfig = migratedOutput?.[1]?.payload?.config || {};
+check(migratedConfig.version === 5, 'v4-Konfiguration wird zur Laufzeit auf v5 migriert');
+check(JSON.stringify(migratedConfig.ui?.quickAccessIds) === JSON.stringify([
+  'light:inside_main', 'light:outside_front_amber', 'light:outside_right', 'switch:high_beam_manual'
+]), 'Bestehende vier Lichtbelegungen bleiben bei der Migration erhalten');
+
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
   ruuvi_ceiling_temperature_in: ['/Temperature', 'victron-input-temperature'],
