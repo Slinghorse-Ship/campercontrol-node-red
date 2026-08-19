@@ -84,6 +84,11 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
   INDEVOLT, Orion, MultiPlus, STAR-Power, Autoterm, MaxxFan und Wasser lesen den
   vorhandenen Snapshot. Nicht verfügbare Werte erscheinen als Strich; Orion
   und nicht bestätigte Schalter sind deaktiviert.
+- Orion `/Mode` wird als gelatchter Steuerzustand behandelt: Der letzte
+  validierte Wert `1` oder `4` bleibt bei frischer Orion-Telemetrie gültig, auch
+  wenn sich `/Mode` länger als das allgemeine 90-s-Datenfenster nicht ändert.
+  Fehlt auch die Telemetrie, bleibt Orion konsequent offline; es werden weder
+  ein alter Zustand noch ein erfundener D-Bus-Pfad angezeigt.
 - Die Lichtseite nutzt die sechs konfigurierten Licht-IDs sowie den manuellen
   Fernlichtausgang, dieselben STAR-Power-Befehle wie V1, klickbare Foto-Hotspots
   und Karten sowie den permanenten Dimmer. Die beiden Fahrzeugbilder werden

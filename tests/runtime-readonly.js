@@ -93,13 +93,15 @@ const shellyAssertions = {
 
 const orionService = 'com.victronenergy.alternator/289';
 const orionNode = byId.get('orion_mode_out') || {};
+const orionModeInput = byId.get('orion_mode_in') || {};
 const orionReadPaths = ['/Dc/0/Power', '/Dc/0/Voltage', '/Dc/0/Current', '/Dc/In/V', '/Dc/In/P', '/State', '/Mode', '/ErrorCode'];
 const orionAssertions = {
   serviceExists: Boolean(cache[orionService]),
   modeReadable: [1, 4].includes(Number(read(orionService, '/Mode'))),
   configuredReadPathsExist: orionReadPaths.every(pathValue => Object.prototype.hasOwnProperty.call(cache[orionService] || {}, pathValue)),
   flowServiceMatches: orionNode.service === orionService,
-  flowPathMatches: orionNode.path === '/Mode'
+  flowPathMatches: orionNode.path === '/Mode',
+  modeInputAcceptsRefresh: orionModeInput.service === orionService && orionModeInput.path === '/Mode' && orionModeInput.onlyChanges === false
 };
 
 // End-to-End-Struktur der beiden kritischen Lichtkanäle; weiterhin ohne Write.

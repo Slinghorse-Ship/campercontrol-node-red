@@ -328,14 +328,51 @@ for (const [id, pathValue] of Object.entries(orionPaths)) {
   check(node.type === 'victron-input-alternator', `${id} nutzt den offiziellen Alternator-Eingang`);
   check(node.service === 'com.victronenergy.alternator/289', `${id} nutzt alternator/289`);
   check(node.path === pathValue, `${id} liest ${pathValue}`);
-  check(node.onlyChanges === true, `${id} sendet nur Änderungen`);
+  check(node.onlyChanges === (id !== 'orion_mode_in'), id === 'orion_mode_in'
+    ? 'Orion /Mode akzeptiert Initial- und Wiederholungswerte'
+    : `${id} sendet nur Änderungen`);
 }
 check(!flows.some(node => String(node.id).startsWith('orion_cache_')), 'Kein Orion-Cache-Polling');
 const stateAggregator = get('ada9353cc6ea4a4c').func || '';
+check(stateAggregator.includes("const orionModeRecord = sensors['orion.mode']"), 'Orion hält den validierten /Mode-Wert separat von der Telemetrie');
+check(stateAggregator.includes("const orionModeNumber = orionOnline ? orionModeValue : null"), 'Orion nutzt den gelatchten /Mode nur bei frischer Geräteverbindung');
+check(stateAggregator.includes("seen('orion.inputVoltage')") && stateAggregator.includes("seen('orion.inputPower')"), 'Orion-Verfügbarkeit berücksichtigt alle nativen Telemetriepfade');
 check(stateAggregator.includes("orionModeNumber === 4 ? 'AUS'"), 'Orion zeigt AUS ausschließlich bei Mode 4');
 check(stateAggregator.includes("'FREIGEGEBEN · WARTET'"), 'Orion Mode 1 mit State 0/null wird als freigegeben und wartend angezeigt');
 check(!stateAggregator.includes("const orionStateNames = { 0: 'AUS'"), 'Orion State 0 wird nicht mehr eigenständig als AUS interpretiert');
 check(stateAggregator.includes('stateText: orionStateText'), 'Snapshot verwendet die modebewusste Orion-Zustandsanzeige');
+
+const runStateAggregator = sensors => {
+  const values = new Map([['camperSensors', sensors]]);
+  const globalValues = new Map();
+  const flowApi = {
+    get: key => values.get(key),
+    set: (key, value) => values.set(key, value)
+  };
+  const globalApi = {
+    get: key => globalValues.get(key),
+    set: (key, value) => globalValues.set(key, value)
+  };
+  const result = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', 'global', stateAggregator)(
+    { topic: 'tick' }, flowApi, {}, { warn() {}, error() {}, status() {} }, {}, {}, globalApi
+  );
+  return result?.[0]?.payload;
+};
+const steadyNow = Date.now();
+const steadyOrion = runStateAggregator({
+  'orion.mode': { value: 1, seen: steadyNow - 5 * 60 * 1000 },
+  'orion.state': { value: 0, seen: steadyNow - 5 * 60 * 1000 },
+  'orion.voltage': { value: 13.19, seen: steadyNow - 1000 },
+  'orion.power': { value: 0, seen: steadyNow - 1000 }
+})?.energy?.orion;
+check(steadyOrion?.online === true, 'Frische Orion-Telemetrie hält das Gerät online');
+check(steadyOrion?.mode === 1 && steadyOrion?.on === true, 'Ein unveränderter Mode 1 bleibt bei frischer Telemetrie erhalten');
+check(steadyOrion?.stateText === 'FREIGEGEBEN · WARTET', 'Gelatchter Mode 1 und ruhender State ergeben den korrekten Bereitschaftsstatus');
+const staleOrion = runStateAggregator({
+  'orion.mode': { value: 1, seen: steadyNow - 5 * 60 * 1000 },
+  'orion.voltage': { value: 13.19, seen: steadyNow - 5 * 60 * 1000 }
+})?.energy?.orion;
+check(staleOrion?.online === false && staleOrion?.mode === null && staleOrion?.on === false, 'Ohne frische Telemetrie wird kein alter Orion-Modus vorgetäuscht');
 
 // Warnlicht/Heck: physisch und strukturell strikt getrennt.
 const warningOut = get('959137a3ca444583');

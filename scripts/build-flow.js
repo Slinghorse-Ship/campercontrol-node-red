@@ -369,7 +369,13 @@ const orionFields = [
   ['error', '/ErrorCode', 8715]
 ];
 for (const [field, pathValue, y] of orionFields) {
-  add(nativeInput(`orion_${field}_in`, `Orion XS · ${pathValue}`, 'com.victronenergy.alternator/289', pathValue, 'number', y, `orion_${field}_topic`));
+  const input = nativeInput(`orion_${field}_in`, `Orion XS · ${pathValue}`, 'com.victronenergy.alternator/289', pathValue, 'number', y, `orion_${field}_topic`);
+  // /Mode ist ein gelatchter Steuerzustand und ändert sich im Normalbetrieb
+  // minuten- oder stundenlang nicht. Wiederholte/initiale Werte dürfen deshalb
+  // nicht vom Input-Node verworfen werden; die Aggregation koppelt den zuletzt
+  // validierten Wert zusätzlich an frische Orion-Telemetrie.
+  if (field === 'mode') input.onlyChanges = false;
+  add(input);
   add(sensorTopic(`orion_${field}_topic`, `→ orion.${field}`, `orion.${field}`, y));
 }
 
@@ -1138,6 +1144,16 @@ state.func = cleanEmbeddedDefaults(state.func)
   )
   .replace("const stratificationDelta = ceilingTemperature.online && floorTemperature.online ? Math.round((ceilingTemperature.temp - floorTemperature.temp) * 10) / 10 : null;\nconst stratificationThreshold = Number(cfg.temperatureSensors && cfg.temperatureSensors.stratificationWarning || 4);\n", '')
   .replace("            stratification: { delta: stratificationDelta, threshold: stratificationThreshold, warning: stratificationDelta != null && Math.abs(stratificationDelta) >= stratificationThreshold },\n", '');
+
+// /Mode ist kein Telemetriemesswert, sondern ein gelatchter Schaltzustand. Ein
+// unveränderter Wert darf nach staleSeconds nicht zu null werden, solange ein
+// anderer Orion-Pfad die aktuelle Geräteverbindung belegt. Sobald auch die
+// Telemetrie veraltet ist, bleibt das Gerät wie bisher offline und Mode wird
+// nicht aus einem alten Datensatz vorgetäuscht.
+state.func = state.func.replace(
+  "const orionMode = sensor('orion.mode');\nconst orionState = sensor('orion.state');\nconst orionSeen = Math.max(seen('orion.mode'), seen('orion.state'), seen('orion.power'), seen('orion.voltage'));\nconst orionOnline = orionSeen > now - staleMs;\nconst orionModeNumber = orionMode == null || orionMode === '' ? null : Number(orionMode);\nconst orionStateNumber = orionState == null || orionState === '' ? null : Number(orionState);",
+  "const orionModeRecord = sensors['orion.mode'];\nconst orionModeSeen = seen('orion.mode');\nconst orionTelemetrySeen = Math.max(seen('orion.state'), seen('orion.power'), seen('orion.voltage'), seen('orion.current'), seen('orion.inputVoltage'), seen('orion.inputPower'), seen('orion.error'));\nconst orionSeen = Math.max(orionModeSeen, orionTelemetrySeen);\nconst orionOnline = orionSeen > now - staleMs;\nconst orionModeValue = orionModeRecord && [1, 4].includes(Number(orionModeRecord.value)) ? Number(orionModeRecord.value) : null;\nconst orionModeNumber = orionOnline ? orionModeValue : null;\nconst orionMode = orionModeNumber;\nconst orionState = sensor('orion.state');\nconst orionStateNumber = orionState == null || orionState === '' ? null : Number(orionState);"
+);
 
 if (!state.func.includes('const externalWifiStatus =')) {
   state.func = replaceOnce(
