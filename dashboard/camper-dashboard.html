@@ -2,12 +2,12 @@
 <main :class="['fs-app',dayMode?'day':'night']">
   <svg class="fs-icon-sprite" aria-hidden="true"><defs>
     <symbol id="fs-battery" viewBox="0 0 32 32"><rect x="3" y="8" width="25" height="17" rx="3"/><path d="M28 13h2v7h-2M8 16h6M20 12v8M16 16h8"/></symbol>
-    <symbol id="fs-solar" viewBox="0 0 32 32"><circle cx="16" cy="16" r="5"/><path d="M16 2v6M16 24v6M2 16h6M24 16h6M6 6l4 4M22 22l4 4M26 6l-4 4M10 22l-4 4"/></symbol>
+    <symbol id="fs-solar" viewBox="0 0 32 32"><circle cx="9" cy="8" r="3"/><path d="M9 1v3M9 12v3M2 8h3M13 8h3M4 3l2 2M14 3l-2 2M5 16h21l4 14H2zM8 16 7 30m7-14v14m6-14 2 14M4 23h24"/></symbol>
     <symbol id="fs-water" viewBox="0 0 32 32"><path d="M16 3C12 10 7 15 7 21a9 9 0 0 0 18 0c0-6-5-11-9-18zM11 22c1 3 3 4 6 4"/></symbol>
-    <symbol id="fs-climate" viewBox="0 0 32 32"><path d="M13 5v14a7 7 0 1 0 6 0V5a3 3 0 0 0-6 0zM16 11v12"/><path d="M23 8h6m-3-3 3 3-3 3"/></symbol>
+    <symbol id="fs-climate" viewBox="0 0 32 32"><path d="M13 5v14a7 7 0 1 0 6 0V5a3 3 0 0 0-6 0zM16 11v12M22 8h5M22 13h3M22 18h5"/></symbol>
     <symbol id="fs-heater" viewBox="0 0 32 32"><path d="M17 3c2 7-5 8-2 14 1-4 5-5 6-9 5 5 7 10 5 15-2 5-6 7-11 7S6 27 6 21c0-5 4-8 7-11-1 5 1 6 4 7"/></symbol>
     <symbol id="fs-settings" viewBox="0 0 32 32"><circle cx="16" cy="16" r="5"/><path d="M13 3h6l1 4 3 2 4-1 3 5-3 3v3l3 3-3 5-4-1-3 2-1 4h-6l-1-4-3-2-4 1-3-5 3-3v-3l-3-3 3-5 4 1 3-2z"/></symbol>
-    <symbol id="fs-bulb" viewBox="0 0 32 32"><path d="M7 21h18l-3-10H10zM10 25h12M12 28h8M16 7V3M7 9 4 6M25 9l3-3"/></symbol>
+    <symbol id="fs-bulb" viewBox="0 0 32 32"><path d="M9 14a7 7 0 1 1 14 0c0 5-4 5-4 9h-6c0-4-4-4-4-9zM12 26h8M14 29h4M16 1v4M5 5l3 3M27 5l-3 3M2 15h4M26 15h4"/></symbol>
     <symbol id="fs-wall-light" viewBox="0 0 32 32"><rect x="5" y="8" width="16" height="16" rx="3"/><circle cx="10" cy="13" r="1"/><circle cx="16" cy="13" r="1"/><circle cx="10" cy="19" r="1"/><circle cx="16" cy="19" r="1"/><path d="M24 10l5-3M24 16h6M24 22l5 3"/></symbol>
     <symbol id="fs-rear-light" viewBox="0 0 32 32"><rect x="11" y="7" width="16" height="16" rx="3"/><circle cx="16" cy="12" r="1"/><circle cx="22" cy="12" r="1"/><circle cx="16" cy="18" r="1"/><circle cx="22" cy="18" r="1"/><path d="M8 9 3 6M8 15H2M8 21l-5 3"/></symbol>
     <symbol id="fs-lightbar" viewBox="0 0 32 32"><rect x="2" y="11" width="28" height="10" rx="2"/><circle cx="6" cy="16" r="1"/><circle cx="11" cy="16" r="1"/><circle cx="16" cy="16" r="1"/><circle cx="21" cy="16" r="1"/><circle cx="26" cy="16" r="1"/></symbol>
@@ -22,6 +22,7 @@
     <symbol id="fs-down-light" viewBox="0 0 32 32"><rect x="6" y="5" width="20" height="12" rx="2"/><circle cx="10" cy="11" r="1"/><circle cx="16" cy="11" r="1"/><circle cx="22" cy="11" r="1"/><path d="m9 20-3 7m10-7v9m7-9 3 7"/></symbol>
     <symbol id="fs-plug" viewBox="0 0 32 32"><path d="M11 4v8M21 4v8M8 12h16v3a8 8 0 0 1-8 8v5M11 28h10M16 15l-3 5h4l-2 5"/></symbol>
     <symbol id="fs-wifi" viewBox="0 0 32 32"><path d="M3 12c7-7 19-7 26 0M7 17c5-5 13-5 18 0M11 22c3-3 7-3 10 0"/><circle cx="16" cy="27" r="1.5"/></symbol>
+    <symbol id="fs-home" viewBox="0 0 32 32"><path d="M3 15 16 3l13 12M7 13v16h7v-9h6v9h5V13"/></symbol>
   </defs></svg>
   <header class="fs-top">
     <div class="fs-brand"><img class="fs-camper-icon" src="/camper-assets/CamperIcon.png"><div><b>{{(s.system?.name||'FORD TRANSIT CAMPER').toUpperCase()}}</b><small>· {{pageLabel()}}</small></div></div>
@@ -177,7 +178,7 @@
     </div>
   </section>
 
-  <nav class="fs-nav"><button :class="{on:page==='home'&&!detail}" @click="detail='';page='home'"><span>⌂</span><b>Home</b></button><button :class="{on:page==='lights'&&!detail}" @click="detail='';page='lights'"><span>◈</span><b>Licht</b></button><button :class="{on:page==='power'&&!detail}" @click="detail='';page='power'"><span>⏻</span><b>12/230 V</b></button></nav>
+  <nav class="fs-nav"><button :class="{on:page==='home'&&!detail}" @click="detail='';page='home'"><svg class="fs-nav-icon"><use href="#fs-home"></use></svg><b>Home</b></button><button :class="{on:page==='lights'&&!detail}" @click="detail='';page='lights'"><svg class="fs-nav-icon"><use href="#fs-bulb"></use></svg><b>Licht</b></button><button :class="{on:page==='power'&&!detail}" @click="detail='';page='power'"><svg class="fs-nav-icon"><use href="#fs-plug"></use></svg><b>12/230 V</b></button></nav>
 
 
 </main>
@@ -314,4 +315,11 @@ html,body,#app,.v-application,.v-application__wrap,.v-main{width:100%;height:100
 </style>
 <style id="fs-external-wifi-v1">
 .fs-detail-page{height:calc(100vh - 160px)!important}.fs-wifi-layout{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(420px,1.7fr);gap:12px;flex:1;min-height:0}.fs-wifi-layout>article{box-sizing:border-box;min-height:0;border:1px solid var(--border);background:linear-gradient(145deg,var(--panel2),var(--panel));border-radius:15px;padding:16px}.fs-wifi-status strong{display:block;margin:8px 0 12px;color:var(--accent);font-size:36px}.fs-wifi-list{display:grid;gap:7px;max-height:58%;margin-top:10px;overflow:auto}.fs-wifi-list>button{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;min-height:56px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);padding:8px 12px;text-align:left}.fs-wifi-list>button span,.fs-wifi-list>button b,.fs-wifi-list>button small{display:block}.fs-wifi-list>button small{margin-top:3px}.fs-wifi-list>button.on{border-color:var(--blue)}.fs-wifi-list>button.connected{border-color:var(--accent);background:#173c32}.fs-wifi-connect{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}.fs-wifi-connect>b,.fs-wifi-connect>small{grid-column:1/3}.fs-wifi-connect input{height:44px;box-sizing:border-box;border:1px solid var(--border);border-radius:9px;background:var(--panel2);color:var(--text);padding:0 12px}.fs-wifi-connect .fs-action{margin:0}.fs-wifi-layout button:disabled{opacity:.45}.fs-switch .fs-channel-icon use[href="#fs-wifi"]{color:inherit}@media(max-width:760px){.fs-wifi-layout{grid-template-columns:1fr}.fs-wifi-page{overflow:auto}.fs-wifi-list{max-height:none}}
+</style>
+<style id="fs-mockup-visual-language-v1">
+.fs-app{--bg:#081116;--panel:#111b20;--panel2:#0d171c;--border:#344149;--text:#f4f7f9;--muted:#aab4ba;--accent:#2fd49b;--blue:#42b9f4;--orange:#ff981f;--red:#ef6e76;background:radial-gradient(circle at 50% -20%,#1c3038 0,#081116 48%,#03090d 100%)}
+.fs-app.day{--bg:#fafafa;--panel:#fbfbfb;--panel2:#f1f3f4;--border:#d0d3d5;--text:#24282c;--muted:#626a70;--accent:#11845f;--blue:#0875c1;--orange:#d66b00;--red:#b83f4a;background:#eceff1}
+.fs-top{background:#071116}.day .fs-top{background:#fff}.fs-home-icon{color:var(--blue)}
+.online{color:var(--accent)}.offline{color:var(--red)}
+.fs-nav button{gap:3px}.fs-nav-icon{width:30px;height:30px;margin:auto;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.fs-nav button.on{color:var(--blue);background:#102b38}.day .fs-nav button.on{color:var(--blue);background:#e4f3fb}
 </style>
