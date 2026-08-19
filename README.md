@@ -46,6 +46,10 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
 - Victron-Geräte möglichst mit den offiziellen Victron-Node-RED-Nodes anbinden.
 - Hardwarebefehle erst nach erfolgreicher Validierung und mit vorherigem Live-Backup deployen.
 - Die lokale Camper-API verwendet HTTP auf Port 1880 und darf nicht ins Internet weitergeleitet werden.
+- gui-v2 WASM/VRM greift nicht direkt auf Port 1880 zu. Der eigene
+  `com.victronenergy.campercontrol`-Dienst veröffentlicht kompakte Zustände und
+  Befehle über die vorhandene D-Bus-/FlashMQ-N/R/W-Infrastruktur; Details stehen
+  in `docs/vrm-remote-transport.md`.
 
 ## Cerbo-CPU-Lüftung
 
