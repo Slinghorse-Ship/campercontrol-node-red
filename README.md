@@ -6,7 +6,9 @@ Die Ford-SYNC-QML-App liegt getrennt im Repository `sync3-camper`.
 ## Verzeichnisstruktur
 
 - `flows/CamperControl_NodeRED.json` – aktueller und einziger Flow-Master
-- `dashboard/camper-dashboard.html` – Dashboard-Quelle
+- `dashboard/camper-dashboard.html` – V1-Dashboard, gemeinsame Live-Bindings und deterministischer V2-Einfügepunkt
+- `dashboard/camper-dashboard-v2.html` – Transit-Horizon-V2-Struktur mit Live-State/Commands
+- `dashboard/camper-dashboard-v2.css` – aus der verbindlichen Touch-50-V2-Quelle übernommene Gestaltung
 - `cerbo-service/` – persistente lokale Cerbo-Dienste und Reparaturskripte
 - `scripts/build-flow.js` – erzeugt den importierbaren Flow unter `dist/`
 - `tests/validate-flow.js` – statische Gesamtprüfung ohne Hardwarezugriff
@@ -19,11 +21,22 @@ Die Ford-SYNC-QML-App liegt getrennt im Repository `sync3-camper`.
 npm run build
 npm run validate
 npm run test:live
+npm run preview
 ```
 
 `npm run build` aktualisiert den Master deterministisch und schreibt den
 importierbaren Export nach `dist/CamperControl_NodeRED.json`. Das Verzeichnis
 `dist/` wird nicht versioniert, weil es jederzeit aus dem Master erzeugt wird.
+
+`npm run preview` startet unter `http://127.0.0.1:4175/` eine ausschließlich
+lesende Designabnahme. Sie setzt exakt dieselben drei Dashboard-Quellen wie der
+Flow-Build zusammen und lädt bei jedem Seitenaufruf einen echten
+`/camper/api/v2/state`-Snapshot vom Cerbo; sie besitzt keine Demo-Fallbackwerte
+und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
+`/?page=lights`, `/?page=energy&pane=sources` und
+`/?page=energy&pane=solar-detail`. `/?design=v1` rendert denselben Live-Snapshot
+im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
+`--port 4175` lassen sich Quelle und Port explizit setzen.
 
 ## Regeln
 
@@ -55,3 +68,16 @@ importierbaren Export nach `dist/CamperControl_NodeRED.json`. Das Verzeichnis
   beziehungsweise `v2`. Es gibt keinen zweiten Geräte- oder Befehlspfad: Beide
   Designs verwenden dieselben realen Zustände und dieselben validierten
   Schaltbefehle.
+- V1 und V2 sind getrennte Template-Zweige. V1 bleibt die bisherige Oberfläche;
+  V2 bildet die Transit-Horizon-Struktur mit Home, Licht, Klima, Energie,
+  Wasser und System ab. `scripts/build-flow.js` setzt die drei Dashboard-Quellen
+  mechanisch in den 358-Node-Master ein.
+- V2 enthält keine Messwert-Demos. Batterie, Solar, drei MPPT-Regler,
+  INDEVOLT, Orion, MultiPlus, STAR-Power, Autoterm, MaxxFan und Wasser lesen den
+  vorhandenen Snapshot. Nicht verfügbare Werte erscheinen als Strich; Orion
+  und nicht bestätigte Schalter sind deaktiviert.
+- Die Lichtseite nutzt die sechs konfigurierten Licht-IDs sowie den manuellen
+  Fernlichtausgang, dieselben STAR-Power-Befehle wie V1, klickbare Foto-Hotspots
+  und Karten sowie den permanenten Dimmer. Die beiden Fahrzeugbilder werden
+  weiterhin unter `/camper-assets/VehicleLightsLeft.png` und
+  `/camper-assets/VehicleLightsRight.png` vom bestehenden Flow ausgeliefert.

@@ -4,13 +4,25 @@ import path from 'node:path';
 const root = path.resolve(import.meta.dirname, '..');
 const sourcePath = path.join(root, 'flows', 'CamperControl_NodeRED.json');
 const dashboardPath = path.join(root, 'dashboard', 'camper-dashboard.html');
+const dashboardV2MarkupPath = path.join(root, 'dashboard', 'camper-dashboard-v2.html');
+const dashboardV2CssPath = path.join(root, 'dashboard', 'camper-dashboard-v2.css');
 const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 fs.mkdirSync(path.dirname(publicPath), { recursive: true });
 const tabId = 'b7be72c8b69bf30e';
 const dashboardId = 'dec0785f657dc7d1';
 
 let flows = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-const dashboard = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8').trim();
+const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const composeDashboard = () => {
+  const markupToken = '<!-- CAMPERCONTROL_V2_MARKUP -->';
+  const cssToken = '/* CAMPERCONTROL_V2_CSS */';
+  if (dashboardTemplate.split(markupToken).length !== 2) throw new Error('V2-Markup-Platzhalter muss genau einmal vorkommen');
+  if (dashboardTemplate.split(cssToken).length !== 2) throw new Error('V2-CSS-Platzhalter muss genau einmal vorkommen');
+  return dashboardTemplate.replace(markupToken, dashboardV2Markup).replace(cssToken, dashboardV2Css);
+};
+const dashboard = composeDashboard();
 const get = id => {
   const node = flows.find(item => item.id === id);
   if (!node) throw new Error(`Node fehlt: ${id}`);
@@ -78,7 +90,8 @@ const outputNode = (id, name, pathValue, type, y) => ({
   wires: []
 });
 
-// Die Dashboard-Datei ist die einzige UI-Quelle. Detailseiten behalten die
+// Das Dashboard wird deterministisch aus dem V1/SFC-Rahmen und den separaten
+// Transit-Horizon-V2-Fragmenten zusammengesetzt. Detailseiten behalten die
 // untere Navigation; WLAN-Zugangsdaten werden dort nie persistiert.
 get(dashboardId).format = dashboard;
 

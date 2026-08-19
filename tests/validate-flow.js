@@ -1,13 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const root = path.resolve(import.meta.dirname, '..');
 const sourcePath = path.join(root, 'flows', 'CamperControl_NodeRED.json');
 const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 const dashboardPath = path.join(root, 'dashboard', 'camper-dashboard.html');
+const dashboardV2MarkupPath = path.join(root, 'dashboard', 'camper-dashboard-v2.html');
+const dashboardV2CssPath = path.join(root, 'dashboard', 'camper-dashboard-v2.css');
+const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
-const dashboard = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8').trim();
+const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const previewSource = fs.readFileSync(previewPath, 'utf8');
+const dashboard = dashboardTemplate
+  .replace('<!-- CAMPERCONTROL_V2_MARKUP -->', dashboardV2Markup)
+  .replace('/* CAMPERCONTROL_V2_CSS */', dashboardV2Css);
 const flows = JSON.parse(sourceText);
 
 const failures = [];
@@ -91,6 +101,83 @@ check(dashboard.includes("setDesignVersion('v1')") && dashboard.includes("setDes
 check(dashboard.includes('this.settingsPatch({ui:{designVersion:version}})'), 'Dashboard speichert die Auswahl über den bestehenden Settings-Patch');
 check((dashboard.match(/command\(target,action,value,extra=/g) || []).length === 1, 'V1 und V2 teilen exakt dieselbe Command-Methode');
 check(dashboard.includes('id="fs-selectable-designs-v2"'), 'Dashboard enthält die eigenständige Transit-Horizon-Gestaltung');
+
+// Transit Horizon V2: eigenständiges, aus der verbindlichen 800x480-Quelle
+// übernommenes Markup/CSS mit denselben Live-Zuständen und Command-Helfern wie V1.
+check((dashboardTemplate.match(/<!-- CAMPERCONTROL_V2_MARKUP -->/g) || []).length === 1, 'Dashboard-Template besitzt genau einen V2-Markup-Platzhalter');
+check((dashboardTemplate.match(/\/\* CAMPERCONTROL_V2_CSS \*\//g) || []).length === 1, 'Dashboard-Template besitzt genau einen V2-CSS-Platzhalter');
+check(!dashboard.includes('CAMPERCONTROL_V2_MARKUP') && !dashboard.includes('CAMPERCONTROL_V2_CSS'), 'Build löst beide V2-Platzhalter vollständig auf');
+check(dashboardTemplate.includes('<template v-if="designV2">') && dashboardTemplate.includes('<template v-else>'), 'V1 und V2 sind getrennte Template-Zweige');
+const normalizedDashboardTemplate = dashboardTemplate.replace(/\r\n/g, '\n');
+const v1MarkupStart = normalizedDashboardTemplate.indexOf('  <header class="fs-top">');
+const v1MarkupEnd = normalizedDashboardTemplate.indexOf('\n  </template>\n</main>', v1MarkupStart);
+const v1Markup = normalizedDashboardTemplate.slice(v1MarkupStart, v1MarkupEnd).trimEnd();
+check(v1MarkupStart >= 0 && v1MarkupEnd > v1MarkupStart, 'V1-Markupblock ist vollständig extrahierbar');
+check(crypto.createHash('sha256').update(v1Markup).digest('hex') === '0cabedd273272c4fe40c70145785220742f7ea30c3e2be1107779e156d8a4bbd', 'V1-Markup ist bytegleich zum freigegebenen fac6ec-Stand');
+check(previewSource.includes("query.get('design') === 'v1' ? 'v1' : 'v2'") && previewSource.includes('designVersion: design'), 'Read-only Preview unterstützt einen expliziten V1-Home-Smoke');
+check(dashboardV2Markup.includes('id="campercontrol-v2-horizon"'), 'V2 verwendet die Transit-Horizon-Wurzel der Designquelle');
+for (const page of ['home', 'lights', 'climate', 'energy', 'water', 'system']) {
+  check(dashboardV2Markup.includes(`data-page="${page}"`), `V2 enthält Seite ${page}`);
+  check(dashboard.includes(`id:'${page}'`), `V2-Navigation enthält ${page}`);
+}
+check((dashboardV2Markup.match(/class="cc2-nav-button/g) || []).length === 0 && dashboardV2Markup.includes('v-for="item in v2Nav"'), 'V2 rendert die sechs Ziele aus genau einem Navigationsmodell');
+check(dashboard.includes("v2Nav(){return[{id:'home'") && dashboard.includes("{id:'system',name:'System'"), 'V2-Navigationsmodell umfasst Home bis System');
+
+const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
+check(transitSymbols.length === 2, 'V2 bettet beide Transit-Liniensymbole updatefest ein');
+const transitHashes = transitSymbols.map(match => crypto.createHash('sha256').update(Buffer.from(match[1], 'base64')).digest('hex'));
+check(transitHashes[0] === '4aa46e7fc2153c29fef645c7e15f3798c2ee057362808ec1b0e190215b3973ef', 'Dunkles Transit-Liniensymbol entspricht exakt der Designquelle');
+check(transitHashes[1] === '0acab7dfc369153214694c7d808975c3b334fb8599190188229d20943178ad9d', 'Helles Transit-Liniensymbol entspricht exakt der Designquelle');
+
+for (const asset of ['/camper-assets/VehicleLightsLeft.png', '/camper-assets/VehicleLightsRight.png']) {
+  check(dashboardV2Markup.includes(asset), `V2 verwendet reales Fahrzeugbild ${asset}`);
+}
+for (const coordinate of ['left:60.85%;top:35.3%', 'left:79.4%;top:4.6%', 'left:74%;top:0', 'left:28.1%;top:7.8%', 'left:30.9%;top:35.3%', 'left:7.7%;top:6.5%', 'left:3.6%;top:0', 'left:45.7%;top:3.9%']) {
+  check(dashboardV2Markup.includes(coordinate), `V2-Fotohotspot entspricht der Designquelle: ${coordinate}`);
+}
+for (const id of ['inside_main', 'outside_left', 'outside_right', 'outside_rear', 'outside_front_white', 'outside_front_amber']) {
+  check(dashboard.includes(id), `V2-Lichtmodell nutzt reale Licht-ID ${id}`);
+}
+check(dashboardV2Markup.includes('v2ToggleZone(zone.key)') && dashboard.includes("v2ToggleZone(zone){"), 'V2-Lichtkarten schalten über den gemeinsamen Live-Helfer');
+check(dashboard.includes("this.lightToggle(light)") && dashboard.includes("this.highBeamToggle()"), 'V2-Licht und Fernlicht enden in den vorhandenen STAR-Power-Befehlen');
+check(dashboardV2Markup.includes("@click=\"v2ToggleZone('highbeam')\"") && dashboardV2Markup.includes(':disabled="!highBeam.outputOnline"'), 'Fernlicht CH3 ist per Foto und Karte schaltbar und bei fehlendem Ausgang gesperrt');
+check(dashboardV2Markup.includes('class="cc2-dimmer-range"') && dashboardV2Markup.includes('@change="v2Dim"'), 'V2 besitzt den permanenten Dimmer für die ausgewählte Zone');
+check(dashboard.includes("this.lightDim(light,event)"), 'V2-Dimmer verwendet den vorhandenen STAR-Power-Dimmbefehl');
+for (const scene of ['camping', 'night', 'all_off']) check(dashboardV2Markup.includes(`v2Scene('${scene}')`), `V2-Lichtseite bietet reale Szene ${scene}`);
+
+check(dashboardV2Markup.includes("v2EnergyPane='power'") && dashboardV2Markup.includes("v2EnergyPane='sources'"), 'V2-Energie behält 12/230 V und Quellen als zwei Ansichten');
+check(dashboard.includes('v2PowerChannels(){return this.powerChannels.slice(0,5)}'), 'V2-Energie begrenzt die sichtbare DC-Verteilung auf fünf reale Verbraucher');
+check(dashboardV2Markup.includes('v-for="item in v2PowerChannels"') && dashboardV2Markup.includes('@click="dcToggle(item)"'), 'Fünf DC-Karten verwenden reale Zustände und Befehle');
+check(!dashboardV2Markup.includes('data-channel=') && !/>CH\s*\d/i.test(dashboardV2Markup), 'V2 zeigt weder Kanalnummern noch technische Kanaltexte');
+check(dashboardV2Markup.includes('cc2-action-state">{{item.on') && dashboardV2Css.includes('.cc2-channel .cc2-action-state { position: absolute'), 'DC-Zustände sind nur barrierefrei und visuell/farblich, nicht als Statustext sichtbar');
+check(dashboardV2Markup.includes('@click="inverterToggle"') && dashboardV2Markup.includes('s.power?.inverter?.outputPower'), '230-V-Karte verwendet MultiPlus-Live-State und bestehenden Befehl');
+check(dashboardV2Markup.includes(':disabled="!s.energy?.orion?.online"') && dashboardV2Markup.includes("s.energy?.orion?.online?fmt(s.energy?.orion?.power,0):'–'"), 'Orion ist offline gesperrt und zeigt dann ausschließlich Striche');
+check(dashboardV2Markup.includes('@click="orionToggle"') && dashboard.includes("command('orion','set'"), 'Lichtmaschine verwendet den realen Orion-Command');
+check(dashboardV2Markup.includes('@click="indevoltToggle"') && dashboard.includes("command('indevoltGrid','set'"), 'INDEVOLT Netz verwendet den vorhandenen Shelly/Victron-Command');
+check(dashboardV2Markup.includes(':disabled="!s.energy?.indevolt?.online"') && !dashboardV2Markup.includes(':disabled="!s.energy?.indevolt?.gridConnection?.available"'), 'INDEVOLT bleibt bei online sichtbarer Karte aktiv, auch wenn nur der Netzanschluss fehlt');
+check(dashboardV2Markup.includes('data-energy-pane="solar-detail"') && dashboardV2Markup.includes('v-for="c in s.energy?.solar?.chargers||[]"'), 'Solar-Gesamtdetail rendert die echten Victron-Laderegler');
+check(dashboardV2Markup.includes('s.energy?.indevolt?.solarPower') && dashboardV2Markup.includes('s.energy?.indevolt?.batteryPower'), 'Solar-Gesamtdetail enthält echte INDEVOLT-Werte');
+check(dashboard.includes("v2PageLabel(){return({home:'Home',lights:'Licht',climate:'Klima',energy:'Energie'"), 'Solar-Detail behält Energie als Seitenkopf');
+check(dashboardV2Markup.includes('{{v2ChargerName(c)}}') && dashboard.includes("if(instance===278)return'MPPT 100/30 · 1'") && dashboard.includes("if(instance===279)return'MPPT 100/30 · 2'") && dashboard.includes("if(instance===290)return'MPPT 150/45'"), 'Solar-Detail verwendet die kurzen MPPT-Titel der Designquelle');
+
+check(dashboardV2Markup.includes('<strong>Klimaautomatik</strong>') && dashboardV2Markup.includes('<span>Autoterm</span>') && dashboardV2Markup.includes('<span>MaxxFan</span>'), 'Home erklärt Klimaautomatik mit Autoterm und MaxxFan eindeutig');
+check(dashboardV2Markup.includes('{{v2QuickName(q)}}') && dashboard.includes("'light:outside_front_white':'Tagfahrlicht'") && dashboard.includes("'light:outside_front_amber':'Warnlicht'"), 'Home kürzt die Schnellzugriffe auf Tagfahrlicht und Warnlicht');
+check(dashboardV2Markup.includes('v-for="minutes in [0,30,60,120]"') && dashboardV2Markup.includes('v2RuntimeOpen'), 'Autoterm-Zeitlimit bleibt optional');
+check(dashboardV2Markup.includes("v2RuntimeOpen?'Zeitlimit':'Zeitlimit hinzufügen'") && dashboardV2Markup.includes(":class=\"v2RuntimeOpen?'':'cc2-sr-only'\""), 'Autoterm zeigt das Zeitlimit erst nach ausdrücklicher Auswahl');
+check(!dashboardV2Markup.includes("v-for=\"m in ['auto','heat','cool']\""), 'Komfort enthält nur Sollwert und zentralen Auto-Schalter');
+check(dashboardV2Markup.includes('@click="heaterToggle"') && dashboardV2Markup.includes('@change="fanSpeed"'), 'Klima verwendet echte Autoterm- und MaxxFan-Befehle');
+check(dashboardV2Markup.includes('s.climate?.temperatureSensors?.comfort') === false && dashboard.includes('v2Humidity(){let value=this.s.climate?.temperatureSensors?.comfort?.humidity'), 'Home-Luftfeuchte stammt aus dem realen Komfortsensor');
+
+check(dashboardV2Markup.includes('v2WaterAvailable') && dashboard.includes('v2WaterAvailable(){let value=this.s.water?.fresh?.level') && dashboardV2Markup.includes('s.water?.pump?.online'), 'Wasserseite verwendet nur Frischwasser- und Pumpen-Live-State');
+for (const forbidden of ['Abwasser', 'Druck', 'Durchfluss']) check(!dashboardV2Markup.includes(forbidden), `V2-Wasserseite enthält kein ${forbidden}`);
+check(dashboardV2Markup.includes(':disabled="!s.water?.pump?.online"') && dashboardV2Markup.includes('@click="pumpToggle"'), 'Wasserpumpe ist bei fehlender Rückmeldung gesperrt und sonst real schaltbar');
+
+for (const frozen of ['35 W', '42,97', '42.97', '31 %', '29,7', '29.7', '7 / 10', 'v3.80']) check(!dashboardV2Markup.includes(frozen), `V2 enthält keinen eingefrorenen Prototypwert ${frozen}`);
+for (const redundant of ['Raumklima', 'Dieselheizung', 'Dachlüfter', 'Transit Lichtzonen']) check(!dashboardV2Markup.includes(redundant), `V2 vermeidet redundante Beschriftung ${redundant}`);
+check(dashboardV2Markup.includes("setDesignVersion('v1')") && dashboardV2Markup.includes("setDesignVersion('v2')"), 'V2-Systemseite bietet den persistenten Designwechsel');
+check(dashboardV2Markup.includes('@click="openVictron"') && dashboard.includes("window.location.hostname"), 'V2-Systemseite öffnet die originale Victron-Ansicht ohne erfundene API');
+check(dashboardV2Css.includes('grid-template-columns: repeat(6, 1fr)') && dashboardV2Css.includes('aspect-ratio: 5 / 3'), 'V2-CSS behält Touch-50-Seitenverhältnis und Sechsfachnavigation');
+check(dashboardV2Css.includes('.cc2-zone-card.is-on') && dashboardV2Css.includes('.cc2-photo-light.is-on::before'), 'V2-CSS zeigt Lichtstatus direkt an Karte und Fahrzeugfoto');
 const settingsDashboard = get('aec5cc044fa2963f').format || '';
 check(settingsDashboard.includes('class="design-picker"'), 'Separate Einstellungsseite bietet die Designauswahl an');
 check(settingsDashboard.includes("this.patch({ui:{designVersion:v}})"), 'Separate Einstellungsseite nutzt denselben Settings-Patch');
