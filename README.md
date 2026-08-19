@@ -39,3 +39,19 @@ importierbaren Export nach `dist/CamperControl_NodeRED.json`. Das Verzeichnis
 - Der manuelle Schalter hat Vorrang vor der Automatik.
 - Die Automatik schaltet standardmäßig ab 65 °C ein und bei 60 °C wieder aus.
 - Beide GX-Relais müssen in Venus OS auf `Manuell` konfiguriert sein.
+
+## Auswählbares Dashboard-Design
+
+- Unter **Einstellungen → Oberfläche** kann dauerhaft zwischen `Design V1` und
+  `Design V2 · Transit Horizon` gewechselt werden.
+- Gespeichert wird ausschließlich `ui.designVersion` mit dem validierten Wert
+  `v1` oder `v2` in der vorhandenen `camperConfig`-Dateiablage des Flow-Kontexts.
+  Ungültige oder fehlende Werte werden auf `v2` normalisiert.
+- `GET /camper/api/v2/settings` liefert die Auswahl als
+  `config.ui.designVersion`; der normale Zustandssnapshot veröffentlicht sie als
+  `state.ui.designVersion`.
+- Ein Wechsel verwendet den bestehenden Settings-Patch
+  `{"target":"settings","action":"patch","patch":{"ui":{"designVersion":"v1"}}}`
+  beziehungsweise `v2`. Es gibt keinen zweiten Geräte- oder Befehlspfad: Beide
+  Designs verwenden dieselben realen Zustände und dieselben validierten
+  Schaltbefehle.

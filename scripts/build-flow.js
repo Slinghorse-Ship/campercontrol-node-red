@@ -949,7 +949,8 @@ const cleanEmbeddedDefaults = source => source.replace(
     value.version = 5;
     value.ui = {
       quickAccessIds: genericQuick || legacyQuick || genericQuickFallback,
-      externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false)
+      externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false),
+      designVersion: value.ui && value.ui.designVersion === 'v1' ? 'v1' : 'v2'
     };
     delete value.security;
     value.access = { scope: 'local-network', unrestricted: true };
@@ -998,6 +999,10 @@ settings.func = cleanEmbeddedDefaults(settings.func)
   .replace(
     "        const currentToken = cfg.security.apiToken;\n        cfg = sanitize(action.backup.config);\n        cfg.security.apiToken = currentToken;\n        changed = true;\n        networkChanged = true;\n        notice = 'Konfiguration wiederhergestellt. Der aktuelle API-Token wurde beibehalten.';",
     "        cfg = sanitize(action.backup.config);\n        changed = true;\n        networkChanged = true;\n        notice = 'Konfiguration wiederhergestellt.';"
+  )
+  .replace(
+    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };",
+    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' };"
   );
 
 if (!settings.func.includes('const sourceVersion = Number(value && value.version || 0);')) {
@@ -1225,6 +1230,10 @@ if (state.func.includes('ui: { quickAccessLightIds:')) {
     "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
   );
 }
+state.func = state.func.replace(
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' },"
+);
 
 const settingsUi = get('aec5cc044fa2963f');
 settingsUi.format = String(settingsUi.format || '')
@@ -1249,6 +1258,28 @@ settingsUi.format = String(settingsUi.format || '')
   .replace(",saveToken(){this.patch({security:{apiToken:this.apiToken}});this.apiToken=''}", '')
   .replace(/\.security p\{/g, '.local-access p{')
   .replace(/\.security label\{/g, '.local-access label{');
+
+if (!settingsUi.format.includes('class="design-picker"')) {
+  settingsUi.format = replaceOnce(
+    settingsUi.format,
+    '  <section>\n    <h2>System</h2>',
+    `  <section class="design-choice"><h2>Oberfläche</h2><p>Design V1 und V2 greifen auf dieselben Live-Zustände und dieselben validierten CamperControl-Befehle zu.</p><div class="design-picker"><button :class="{active:cfg.ui&&cfg.ui.designVersion==='v1'}" @click="selectDesign('v1')"><b>DESIGN V1</b><span>Bewährte CamperControl-Ansicht</span></button><button :class="{active:!cfg.ui||cfg.ui.designVersion!=='v1'}" @click="selectDesign('v2')"><b>DESIGN V2</b><span>Transit Horizon</span></button></div></section>\n  <section>\n    <h2>System</h2>`,
+    'Designauswahl in den Einstellungen'
+  );
+  settingsUi.format = replaceOnce(
+    settingsUi.format,
+    "history:{},access:{}},persistent:false",
+    "history:{},access:{},ui:{designVersion:'v2'}},persistent:false",
+    'UI-Default der Einstellungsseite'
+  );
+  settingsUi.format = replaceOnce(
+    settingsUi.format,
+    "methods:{go(p){window.location.href='/dashboard'+p},sendAction(a)",
+    "methods:{go(p){window.location.href='/dashboard'+p},selectDesign(v){if(!['v1','v2'].includes(v))return;this.cfg.ui=Object.assign({},this.cfg.ui||{},{designVersion:v});this.patch({ui:{designVersion:v}})},sendAction(a)",
+    'Designauswahl speichern'
+  );
+  settingsUi.format += '<style id="settings-selectable-designs-v2">.design-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.design-picker button{min-height:78px;display:grid;align-content:center;gap:5px;text-align:left}.design-picker button b,.design-picker button span{display:block}.design-picker button span{color:#9eabb5;font-size:11px}.design-picker button.active{border-color:#37bdf5;background:#153b50;box-shadow:inset 0 0 0 1px #37bdf555}.design-picker button.active b{color:#6bd2ff}@media(max-width:760px){.design-picker{grid-template-columns:1fr}}</style>';
+}
 
 for (const node of flows) {
   if (typeof node.func === 'string') node.func = cleanEmbeddedDefaults(node.func);

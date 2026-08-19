@@ -27,6 +27,18 @@ const targetsOf = id => (get(id).wires || []).flat();
 const nodesAt = (service, pathValue, type) => flows.filter(node =>
   node.service === service && node.path === pathValue && (!type || node.type === type));
 
+const compileVueScript = (markup, label) => {
+  const match = String(markup).match(/<script>\s*([\s\S]*?)\s*<\/script>/);
+  check(Boolean(match), `${label} enthält ein Script`);
+  if (!match) return;
+  try {
+    new Function(match[1].replace(/^\s*export\s+default/, 'return'));
+    check(true, `${label} Script ist syntaktisch gültig`);
+  } catch (error) {
+    check(false, `${label} Script ist syntaktisch gültig: ${error.message}`);
+  }
+};
+
 let wiresChecked = 0;
 let functionsChecked = 0;
 for (const node of flows) {
@@ -60,6 +72,7 @@ const snapshotFunction = get('ada9353cc6ea4a4c').func || '';
 check(settingsFunction.includes('cfg.version = 5'), 'Konfigurationsschema ist v5');
 check(settingsFunction.includes('source.ui.quickAccessLightIds.map'), 'v4-Lichtbelegungen werden auf generische IDs migriert');
 check(settingsFunction.includes('cfg.ui = { quickAccessIds,'), 'Settings speichern generische Schnellzugriff-IDs');
+check(settingsFunction.includes("designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2'"), 'Settings validieren Design V1/V2 und verwenden V2 als Fallback');
 for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main']) {
   check(settingsFunction.includes(id), `Generischer Standard-Schnellzugriff enthält ${id}`);
 }
@@ -67,11 +80,22 @@ for (const target of ['device:inverter', 'device:orion', 'device:indevolt_grid',
   check(snapshotFunction.includes(target), `Schnellzugriff-Katalog enthält ${target}`);
 }
 check(snapshotFunction.includes('quickAccessOptions, externalWifiTileEnabled'), 'Snapshot veröffentlicht Auswahl, Katalog und aufgelöste Aktionen');
+check(snapshotFunction.includes("designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2'"), 'Snapshot veröffentlicht die persistierte Designversion');
 check(snapshotFunction.includes("target: 'waterPump', action: 'set'"), 'Wasserpumpen-Schnellzugriff nutzt den validierten Router');
 check(snapshotFunction.includes("target: 'scene', action: 'run'"), 'Szenen sind als Schnellzugriff auswählbar');
 check(dashboard.includes('v-for="q in quickItems"'), 'Dashboard rendert generische Schnellzugriffe');
 check(dashboard.includes('quickActivate(q)'), 'Dashboard führt den vom Backend aufgelösten Befehl aus');
 check(dashboard.includes("settingsPatch({ui:{quickAccessIds:ids}})"), 'Dashboard speichert generische IDs');
+check(dashboard.includes("designV2?'design-v2':'design-v1'"), 'Dashboard aktiviert V1/V2 über eine gemeinsame Template-Wurzel');
+check(dashboard.includes("setDesignVersion('v1')") && dashboard.includes("setDesignVersion('v2')"), 'Dashboard-Einstellungen bieten Design V1 und V2 an');
+check(dashboard.includes('this.settingsPatch({ui:{designVersion:version}})'), 'Dashboard speichert die Auswahl über den bestehenden Settings-Patch');
+check((dashboard.match(/command\(target,action,value,extra=/g) || []).length === 1, 'V1 und V2 teilen exakt dieselbe Command-Methode');
+check(dashboard.includes('id="fs-selectable-designs-v2"'), 'Dashboard enthält die eigenständige Transit-Horizon-Gestaltung');
+const settingsDashboard = get('aec5cc044fa2963f').format || '';
+check(settingsDashboard.includes('class="design-picker"'), 'Separate Einstellungsseite bietet die Designauswahl an');
+check(settingsDashboard.includes("this.patch({ui:{designVersion:v}})"), 'Separate Einstellungsseite nutzt denselben Settings-Patch');
+compileVueScript(dashboard, 'Camper-Dashboard');
+compileVueScript(settingsDashboard, 'Einstellungs-Dashboard');
 
 const legacyQuickStore = new Map([['camperConfig', {
   version: 4,
@@ -86,9 +110,33 @@ const runSettings = new Function('msg', 'flow', 'context', 'node', 'env', 'RED',
 const migratedOutput = runSettings({ req: { method: 'GET' }, payload: {} }, legacyQuickFlow, {}, {}, {}, {});
 const migratedConfig = migratedOutput?.[1]?.payload?.config || {};
 check(migratedConfig.version === 5, 'v4-Konfiguration wird zur Laufzeit auf v5 migriert');
+check(migratedConfig.ui?.designVersion === 'v2', 'Bestehende Konfigurationen erhalten Design V2 als sicheren Standard');
 check(JSON.stringify(migratedConfig.ui?.quickAccessIds) === JSON.stringify([
   'light:inside_main', 'light:outside_front_amber', 'light:outside_right', 'switch:high_beam_manual'
 ]), 'Bestehende vier Lichtbelegungen bleiben bei der Migration erhalten');
+
+const designMemory = new Map();
+const designFile = new Map([['camperConfig', migratedConfig]]);
+const designFlow = {
+  get: (key, store) => store === 'file' ? designFile.get(key) : designMemory.get(key),
+  set: (key, value, store) => (store === 'file' ? designFile : designMemory).set(key, value)
+};
+let designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, designFlow, {}, {}, {}, {});
+check(designOutput?.[0]?.payload?.config?.ui?.designVersion === 'v1', 'Settings-Patch schaltet auf Design V1');
+check(designFile.get('camperConfig')?.ui?.designVersion === 'v1', 'Design V1 wird im Datei-Kontext dauerhaft gespeichert');
+designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'unbekannt' } } } }, designFlow, {}, {}, {}, {});
+check(designOutput?.[0]?.payload?.config?.ui?.designVersion === 'v2', 'Ungültige Designwerte werden auf V2 normalisiert');
+check(designFile.get('camperConfig')?.ui?.designVersion === 'v2', 'Normalisierte Designauswahl wird dauerhaft gespeichert');
+
+const commandStore = new Map([['camperConfig', migratedConfig], ['camperCommands', []], ['camperWsClients', {}]]);
+const commandFlow = {
+  get: key => commandStore.get(key),
+  set: (key, value) => commandStore.set(key, value)
+};
+const runCommandRouter = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('6265bf6f9bade1e5').func || '');
+const designCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, commandFlow, {}, {}, {}, {});
+check(designCommandOutput?.[4]?.topic === 'ws.settings' && designCommandOutput?.[4]?.payload?.patch?.ui?.designVersion === 'v1', 'Designwechsel nutzt den vorhandenen Settings-Router');
+check([0, 1, 2, 3, 9, 11].every(index => designCommandOutput?.[index] == null), 'Designwechsel erzeugt keinen Hardwarebefehl');
 
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
