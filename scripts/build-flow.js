@@ -841,6 +841,98 @@ if (!state.func.includes('externalWifiTileEnabled')) {
   );
 }
 
+// Cerbo-Gehäuselüftung: reale Verdrahtung Relais 1 = Abluft und Relais 2 =
+// Zuluft. Beide Relais laufen gemeinsam. Ein manueller Dauerlauf hat Vorrang;
+// ansonsten schaltet die CPU-Automatik mit Hysterese.
+get('d9dfa5db2a5bb99a').name = 'Cerbo Relais 1 Rückmeldung · Abluft';
+get('a157af67cff27109').name = 'Cerbo Relais 2 Rückmeldung · Zuluft';
+get('edaf4c40dd44c239').name = 'Cerbo Relais 1 · Abluft';
+get('06b5677f5f5ddd99').name = 'Cerbo Relais 2 · Zuluft';
+get('072c2bcdc760dd56').name = 'Cerbo-CPU: Relais 1 Abluft · Relais 2 Zuluft';
+const ventilationController = get('614274d83b9a4241');
+ventilationController.name = 'CPU-Lüftung · manuell oder Temperatur';
+ventilationController.func = String.raw`
+const cfg = flow.get('camperConfig') || {};
+const settings = Object.assign({ enabled: true, manualOn: false, onTemperature: 65, hysteresis: 5 }, cfg.ventilation || {});
+let state = flow.get('ventilationState') || {
+    active: false,
+    manualOn: false,
+    supplyOn: false,
+    exhaustOn: false,
+    supplyFeedback: null,
+    exhaustFeedback: null,
+    cpuTemperature: null,
+    sensorOnline: false,
+    reason: 'Initialisierung',
+    updatedAt: 0
+};
+
+// Reale Verdrahtung: Relais 1 = Abluft, Relais 2 = Zuluft.
+if (msg.topic === 'ventilation.relay1') state.exhaustFeedback = Number(msg.payload) === 1;
+if (msg.topic === 'ventilation.relay2') state.supplyFeedback = Number(msg.payload) === 1;
+
+if (msg.topic === 'ventilation.cpu' && Number.isFinite(Number(msg.payload))) {
+    state.cpuTemperature = Number(msg.payload);
+    state.cpuSeen = Date.now();
+}
+
+const temperature = Number(state.cpuTemperature);
+const sensorValid = Number.isFinite(temperature) && Date.now() - Number(state.cpuSeen || 0) < 30000;
+state.sensorOnline = sensorValid;
+state.sensorName = 'Cerbo GX CPU';
+const onTemperature = Math.max(30, Math.min(95, Number(settings.onTemperature || 65)));
+const hysteresis = Math.max(2, Math.min(20, Number(settings.hysteresis || 5)));
+const manualOn = settings.manualOn === true;
+let desired = state.active === true;
+
+if (manualOn) {
+    desired = true;
+    state.reason = 'Manuell eingeschaltet';
+} else if (settings.enabled !== true) {
+    desired = false;
+    state.reason = 'Automatik aus';
+} else if (!sensorValid) {
+    // Ohne aktuelle Temperatur schaltet nur der bewusste Handbetrieb ein.
+    desired = false;
+    state.reason = 'CPU-Temperatur nicht verfügbar';
+} else if (desired && temperature <= onTemperature - hysteresis) {
+    desired = false;
+    state.reason = 'Unter Ausschalttemperatur';
+} else if (!desired && temperature >= onTemperature) {
+    desired = true;
+    state.reason = 'CPU-Temperatur zu hoch';
+} else {
+    state.reason = desired ? 'Temperatur halten · Lüftung läuft' : 'Temperatur im Sollbereich';
+}
+
+const changed = state.active !== desired || state.supplyOn !== desired || state.exhaustOn !== desired;
+state.active = desired;
+state.manualOn = manualOn;
+state.supplyOn = desired;
+state.exhaustOn = desired;
+state.enabled = settings.enabled === true;
+state.onTemperature = onTemperature;
+state.offTemperature = onTemperature - hysteresis;
+state.hysteresis = hysteresis;
+state.updatedAt = Date.now();
+flow.set('ventilationState', state);
+
+const relay1 = state.exhaustFeedback === desired && !changed ? null : { payload: desired ? 1 : 0 };
+const relay2 = state.supplyFeedback === desired && !changed ? null : { payload: desired ? 1 : 0 };
+const refresh = changed || msg.topic === 'ventilation.relay1' || msg.topic === 'ventilation.relay2'
+    ? { topic: 'tick', _camperSource: 'ventilation' }
+    : null;
+return [relay1, relay2, refresh];
+`;
+if (!state.func.includes('manualOn: ventilation.manualOn === true')) {
+  state.func = replaceOnce(
+    state.func,
+    '            enabled: ventilation.enabled === true,',
+    '            enabled: ventilation.enabled === true,\n            manualOn: ventilation.manualOn === true,',
+    'Manueller Lüfterstatus im Snapshot'
+  );
+}
+
 // Das aktuelle Schema ist rein lokal und unbeschränkt. Frühere Token-Felder
 // werden weder übernommen noch nach außen gespiegelt. Ebenso bleibt die
 // Temperaturseite bei den realen Messpunkten; eine Schichtungswarnung gehört
@@ -855,12 +947,24 @@ const cleanEmbeddedDefaults = source => source.replace(
       ceilingService: 'com.victronenergy.temperature/24',
       floorService: ''
     });
+    value.ventilation = Object.assign({}, value.ventilation || {}, {
+      enabled: true,
+      manualOn: false,
+      onTemperature: Number(value.ventilation?.onTemperature || 65),
+      hysteresis: Number(value.ventilation?.hysteresis || 5),
+      supplyRelay: 2,
+      exhaustRelay: 1
+    });
     delete value.temperatureSensors.stratificationWarning;
     return prefix + JSON.stringify(value) + suffix;
   }
 );
 
 settings.func = cleanEmbeddedDefaults(settings.func)
+  .replace(
+    "    cfg.ventilation = {\n        enabled: boolean(cfg.ventilation && cfg.ventilation.enabled, false),\n        onTemperature: number(cfg.ventilation && cfg.ventilation.onTemperature, 65, 30, 95),\n        hysteresis: number(cfg.ventilation && cfg.ventilation.hysteresis, 5, 2, 20),\n        // Die Hardwarezuordnung ist fest: Cerbo Relais 1 = Zuluft,\n        // Cerbo Relais 2 = Abluft. Sie ist nicht frei umkonfigurierbar.\n        supplyRelay: 1,\n        exhaustRelay: 2\n    };",
+    "    cfg.ventilation = {\n        enabled: boolean(cfg.ventilation && cfg.ventilation.enabled, true),\n        manualOn: boolean(cfg.ventilation && cfg.ventilation.manualOn, false),\n        onTemperature: number(cfg.ventilation && cfg.ventilation.onTemperature, 65, 30, 95),\n        hysteresis: number(cfg.ventilation && cfg.ventilation.hysteresis, 5, 2, 20),\n        // Die Hardwarezuordnung ist fest: Cerbo Relais 1 = Abluft,\n        // Cerbo Relais 2 = Zuluft. Sie ist nicht frei umkonfigurierbar.\n        supplyRelay: 2,\n        exhaustRelay: 1\n    };"
+  )
   .replace(
     "    cfg.temperatureSensors = {\n        ceilingService: text(cfg.temperatureSensors && cfg.temperatureSensors.ceilingService, '', 180),\n        floorService: text(cfg.temperatureSensors && cfg.temperatureSensors.floorService, '', 180),\n        stratificationWarning: number(cfg.temperatureSensors && cfg.temperatureSensors.stratificationWarning, 4, 1, 10)\n    };",
     "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: ''\n    };"
@@ -985,6 +1089,15 @@ state.func = state.func.replace(
 
 const settingsUi = get('aec5cc044fa2963f');
 settingsUi.format = String(settingsUi.format || '')
+  .replace(
+    'Die höchste Linux-Thermal-Zone des Cerbo steuert Relais 1 (Zuluft) und Relais 2 (Abluft).',
+    'Die höchste Linux-Thermal-Zone des Cerbo steuert Relais 1 (Abluft) und Relais 2 (Zuluft).'
+  )
+  .replace(
+    '<label><input type="checkbox" v-model="cfg.ventilation.enabled" @change="saveVentilation"> CPU-Lüftung aktiv</label>',
+    '<label><input type="checkbox" v-model="cfg.ventilation.enabled" @change="saveVentilation"> CPU-Automatik aktiv</label><label><input type="checkbox" v-model="cfg.ventilation.manualOn" @change="saveVentilation"> Lüfter manuell dauerhaft EIN</label>'
+  )
+  .replace('Relais 1 Zuluft · Relais 2 Abluft', 'Relais 1 Abluft · Relais 2 Zuluft')
   .replace(
     'Die Sicherung enthält Namen, Anordnung, Zuordnungen, Szenen und Wartungsplan. Der API-Token wird aus Sicherheitsgründen nicht exportiert und beim Import beibehalten.',
     'Die Sicherung enthält Namen, Anordnung, Zuordnungen, Szenen und Wartungsplan.'

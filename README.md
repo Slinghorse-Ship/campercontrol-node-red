@@ -33,3 +33,9 @@ importierbaren Export nach `dist/CamperControl_NodeRED.json`. Das Verzeichnis
 - Hardwarebefehle erst nach erfolgreicher Validierung und mit vorherigem Live-Backup deployen.
 - Die lokale Camper-API verwendet HTTP auf Port 1880 und darf nicht ins Internet weitergeleitet werden.
 
+## Cerbo-CPU-Lüftung
+
+- Relais 1 schaltet die Abluft, Relais 2 die Zuluft; beide laufen immer gemeinsam.
+- Der manuelle Schalter hat Vorrang vor der Automatik.
+- Die Automatik schaltet standardmäßig ab 65 °C ein und bei 60 °C wieder aus.
+- Beide GX-Relais müssen in Venus OS auf `Manuell` konfiguriert sein.

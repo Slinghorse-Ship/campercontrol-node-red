@@ -78,6 +78,43 @@ check(!sourceText.includes('/victron/cache'), 'Kein Ruuvi-Cache-Polling');
 check(get('camper_service_status_tick').repeat === '60', 'Service-Status läuft höchstens alle 60 s');
 check(get('camper_service_status_guard').type === 'function', 'Service-Status besitzt eine Prozesssperre');
 
+// Cerbo-CPU-Lüftung: korrekte Relaiszuordnung sowie Handbetrieb ODER
+// Temperaturautomatik mit 5-K-Hysterese.
+const ventilationController = get('614274d83b9a4241');
+check(get('edaf4c40dd44c239').path === '/Relay/0/State' && /Abluft/.test(get('edaf4c40dd44c239').name), 'Relais 1 ist Abluft');
+check(get('06b5677f5f5ddd99').path === '/Relay/1/State' && /Zuluft/.test(get('06b5677f5f5ddd99').name), 'Relais 2 ist Zuluft');
+check(ventilationController.func.includes("if (manualOn)"), 'Manueller Lüfterlauf hat Vorrang');
+check(ventilationController.func.includes('temperature <= onTemperature - hysteresis'), 'CPU-Lüftung besitzt eine Rückschalthysterese');
+check(get('ada9353cc6ea4a4c').func.includes('manualOn: ventilation.manualOn === true'), 'Snapshot veröffentlicht den Handbetrieb');
+check(dashboard.includes('LÜFTER MANUELL'), 'Dashboard besitzt einen manuellen Lüfterknopf');
+
+const ventilationStore = new Map([
+  ['camperConfig', { ventilation: { enabled: true, manualOn: false, onTemperature: 65, hysteresis: 5 } }]
+]);
+const ventilationFlow = {
+  get: key => ventilationStore.get(key),
+  set: (key, value) => ventilationStore.set(key, value)
+};
+const runVentilation = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', ventilationController.func);
+const ventilationRun = msg => runVentilation(msg, ventilationFlow, {}, {}, {}, {});
+let ventilationOutput = ventilationRun({ topic: 'ventilation.cpu', payload: 64 });
+check(ventilationStore.get('ventilationState').active === false, '64 °C bleibt unter der Einschaltschwelle');
+ventilationOutput = ventilationRun({ topic: 'ventilation.cpu', payload: 65 });
+check(ventilationStore.get('ventilationState').active === true, '65 °C schaltet beide Lüfter ein');
+check(ventilationOutput[0]?.payload === 1 && ventilationOutput[1]?.payload === 1, 'Übertemperatur schaltet beide Relais');
+ventilationRun({ topic: 'ventilation.cpu', payload: 61 });
+check(ventilationStore.get('ventilationState').active === true, '61 °C hält die Lüfter innerhalb der Hysterese an');
+ventilationOutput = ventilationRun({ topic: 'ventilation.cpu', payload: 60 });
+check(ventilationStore.get('ventilationState').active === false, '60 °C schaltet beide Lüfter wieder aus');
+ventilationStore.set('camperConfig', { ventilation: { enabled: false, manualOn: true, onTemperature: 65, hysteresis: 5 } });
+ventilationOutput = ventilationRun({ topic: 'tick' });
+check(ventilationStore.get('ventilationState').active === true, 'Handbetrieb funktioniert auch bei ausgeschalteter Automatik');
+check(ventilationOutput[0]?.payload === 1 && ventilationOutput[1]?.payload === 1, 'Handbetrieb schaltet beide Relais');
+ventilationRun({ topic: 'ventilation.relay1', payload: 1 });
+check(ventilationStore.get('ventilationState').exhaustFeedback === true, 'Rückmeldung Relais 1 gehört zur Abluft');
+ventilationRun({ topic: 'ventilation.relay2', payload: 1 });
+check(ventilationStore.get('ventilationState').supplyFeedback === true, 'Rückmeldung Relais 2 gehört zur Zuluft');
+
 // Shelly: nur der native, durch Venus OS registrierte Dienst.
 const shellyOut = get('shelly_grid_state_out');
 check(shellyOut.type === 'victron-output-custom', 'Shelly-Freigabe nutzt nativen Victron-Ausgang');
