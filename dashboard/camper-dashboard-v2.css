@@ -1,10 +1,14 @@
     #campercontrol-v2-horizon {
       color-scheme: light dark;
       width: 100%;
-      padding: 8px;
+      height: 100vh;
+      min-height: 0;
+      padding: 0;
+      overflow: hidden;
       box-sizing: border-box;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: light-dark(#10161a, #f3f7fa);
+      background: light-dark(#edf2f4, #080c12);
     }
     #campercontrol-v2-horizon * { box-sizing: border-box; }
     #campercontrol-v2-horizon button,
@@ -14,12 +18,12 @@
       width: min(100%, 800px);
       aspect-ratio: 5 / 3;
       margin: 0 auto;
-      padding: 7px;
+      padding: 0;
       overflow: hidden;
-      border: 1px solid light-dark(#c8d1d6, #22313d);
-      border-radius: 25px;
-      background: #030609;
-      box-shadow: 0 24px 60px light-dark(#53616d33, #00000088);
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
     }
     #campercontrol-v2-horizon .cc2-screen {
       height: 100%;
@@ -27,7 +31,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      border-radius: 19px;
+      border-radius: 0;
       background:
         radial-gradient(circle at 86% 2%, light-dark(#d7f3ff, #0f283a) 0, transparent 32%),
         linear-gradient(145deg, light-dark(#f8fafb, #0d1722), light-dark(#edf2f4, #080c12) 70%);
@@ -132,6 +136,11 @@
     #campercontrol-v2-horizon .cc2-icon-button:hover { background: light-dark(#dce7eb, #1c2b39); }
     #campercontrol-v2-horizon .cc2-icon-button:active { transform: scale(.97); }
     #campercontrol-v2-horizon .cc2-icon-button svg { width: 19px; height: 19px; }
+    #campercontrol-v2-horizon .cc2-close-button {
+      color: light-dark(#8d2632, #ff9aa3);
+      background: light-dark(#f8e8ea, #321d22);
+    }
+    #campercontrol-v2-horizon .cc2-close-button:hover { background: light-dark(#f3d8dc, #44242b); }
     #campercontrol-v2-horizon .cc2-pages {
       flex: 1;
       min-height: 0;
@@ -694,8 +703,8 @@
       white-space: nowrap;
     }
     #campercontrol-v2-horizon .cc2-toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
-    #campercontrol-v2-horizon.cc2-light { color-scheme: light; }
-    #campercontrol-v2-horizon.cc2-dark { color-scheme: dark; }
+    #campercontrol-v2-horizon.cc2-light { color-scheme: light; background: #edf2f4; }
+    #campercontrol-v2-horizon.cc2-dark { color-scheme: dark; background: #080c12; }
     #campercontrol-v2-horizon .cc2-icon-library { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
     #campercontrol-v2-horizon .cc2-light-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     #campercontrol-v2-horizon .cc2-nav-button .cc2-light-icon { width: 19px; height: 19px; display: block; margin: 0 auto 3px; }
@@ -751,8 +760,8 @@
       #campercontrol-v2-horizon .cc2-dimmer-top { margin-bottom: 3px; }
     }
     @media (max-width: 600px) {
-      #campercontrol-v2-horizon { max-width: 100%; padding: 3px; overflow: hidden; }
-      #campercontrol-v2-horizon .cc2-device { width: 100%; max-width: 100%; aspect-ratio: auto; min-height: 760px; border-radius: 20px; }
+      #campercontrol-v2-horizon { max-width: 100%; padding: 0; overflow: hidden; }
+      #campercontrol-v2-horizon .cc2-device { width: 100%; max-width: 100%; aspect-ratio: auto; min-height: 760px; border-radius: 0; }
       #campercontrol-v2-horizon .cc2-screen { width: 100%; max-width: 100%; min-height: 746px; overflow: hidden; }
       #campercontrol-v2-horizon .cc2-header { padding: 0 9px; gap: 7px; }
       #campercontrol-v2-horizon .cc2-brand { min-width: 50px; }
@@ -802,9 +811,11 @@
   padding: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
-  background: #030609 !important;
+  background: #080c12 !important;
   box-shadow: none !important;
 }
+.fs-app.design-v2.day { background: #edf2f4 !important; }
+.fs-app.design-v2.night { background: #080c12 !important; }
 #campercontrol-v2-horizon { height: 100vh; min-height: 0; }
 #campercontrol-v2-horizon .cc2-device { max-height: 100%; }
 #campercontrol-v2-horizon .cc2-online.is-offline { color: light-dark(#9b3340, #ff8792); background: light-dark(#fdebed, #34191e); }

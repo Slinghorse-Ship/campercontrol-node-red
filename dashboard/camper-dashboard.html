@@ -239,6 +239,7 @@ export default{
   ,v2PowerName(item){return({dc_outlets_left:'Links',water_pump:'Wasserpumpe',dc_outlets_right:'Rechts',starlink:'Starlink',maxxfan_power:'MaxxFan'}[item.id]||this.powerName(item))}
   ,v2ChargerName(charger){let instance=Number(charger?.instance);if(instance===278)return'MPPT 100/30 · 1';if(instance===279)return'MPPT 100/30 · 2';if(instance===290)return'MPPT 150/45';return String(charger?.name||'MPPT').replace(/^SmartSolar\s+/,'')}
   ,v2SetRuntime(minutes){this.heaterSetting('duration',minutes);this.v2RuntimeOpen=false}
+  ,v2Close(){if(window.history.length>1){window.history.back();return}try{if(window.opener&&!window.opener.closed){window.close();return}}catch(error){}window.location.replace(window.location.protocol+'//'+window.location.hostname)}
   ,indevoltToggle(){let grid=this.s.energy?.indevolt?.gridConnection;if(grid?.available)this.command('indevoltGrid','set',!grid.on)}
   ,openVictron(){window.open(window.location.protocol+'//'+window.location.hostname,'_blank','noopener')}
  }

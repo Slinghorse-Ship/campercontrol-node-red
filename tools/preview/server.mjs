@@ -6,6 +6,8 @@ const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const dashboardTemplatePath = path.join(repoRoot, 'dashboard', 'camper-dashboard.html');
 const dashboardV2MarkupPath = path.join(repoRoot, 'dashboard', 'camper-dashboard-v2.html');
 const dashboardV2CssPath = path.join(repoRoot, 'dashboard', 'camper-dashboard-v2.css');
+const transitDarkPath = path.join(repoRoot, 'dashboard', 'assets', 'transit-line-symbol-dark.png');
+const transitLightPath = path.join(repoRoot, 'dashboard', 'assets', 'transit-line-symbol-light.png');
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
   const index = args.indexOf(name);
@@ -16,7 +18,11 @@ const cerboBase = arg('--cerbo', 'http://venus.local:1880').replace(/\/$/, '');
 const vueUrl = 'https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js';
 
 const dashboardTemplate = fs.readFileSync(dashboardTemplatePath, 'utf8');
-const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8').trim();
+const transitDataUri = filePath => `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`;
+const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8')
+  .replace('__CC2_TRANSIT_DARK_DATA_URI__', transitDataUri(transitDarkPath))
+  .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', transitDataUri(transitLightPath))
+  .trim();
 const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const dashboard = dashboardTemplate
   .replace('<!-- CAMPERCONTROL_V2_MARKUP -->', dashboardV2Markup)

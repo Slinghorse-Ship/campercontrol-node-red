@@ -9,6 +9,7 @@ Die Ford-SYNC-QML-App liegt getrennt im Repository `sync3-camper`.
 - `dashboard/camper-dashboard.html` – V1-Dashboard, gemeinsame Live-Bindings und deterministischer V2-Einfügepunkt
 - `dashboard/camper-dashboard-v2.html` – Transit-Horizon-V2-Struktur mit Live-State/Commands
 - `dashboard/camper-dashboard-v2.css` – aus der verbindlichen Touch-50-V2-Quelle übernommene Gestaltung
+- `dashboard/assets/` – transparente Transit-Liniensymbole, identisch zur Ford-SYNC-App
 - `cerbo-service/` – persistente lokale Cerbo-Dienste und Reparaturskripte
 - `scripts/build-flow.js` – erzeugt den importierbaren Flow unter `dist/`
 - `tests/validate-flow.js` – statische Gesamtprüfung ohne Hardwarezugriff
@@ -72,6 +73,13 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
   V2 bildet die Transit-Horizon-Struktur mit Home, Licht, Klima, Energie,
   Wasser und System ab. `scripts/build-flow.js` setzt die drei Dashboard-Quellen
   mechanisch in den 358-Node-Master ein.
+- V2 zeichnet auf 800 × 480 ohne künstlichen Geräte-Rand bis an alle vier
+  Displayecken. Das Transit-Liniensymbol besitzt in Tag und Nacht echte
+  Transparenz und denselben kompakten FORD-Grill wie die SYNC-App.
+- Die Schaltfläche oben rechts geht im Browser zuerst im Verlauf zurück,
+  schließt ein von einer anderen Seite geöffnetes Fenster oder wechselt als
+  sichere letzte Rückfallebene zur Victron-Startseite. Sie sendet niemals einen
+  Geräte- oder Servicebefehl; System bleibt über die untere Navigation erreichbar.
 - V2 enthält keine Messwert-Demos. Batterie, Solar, drei MPPT-Regler,
   INDEVOLT, Orion, MultiPlus, STAR-Power, Autoterm, MaxxFan und Wasser lesen den
   vorhandenen Snapshot. Nicht verfügbare Werte erscheinen als Strich; Orion

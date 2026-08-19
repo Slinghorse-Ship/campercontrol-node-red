@@ -8,11 +8,19 @@ const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 const dashboardPath = path.join(root, 'dashboard', 'camper-dashboard.html');
 const dashboardV2MarkupPath = path.join(root, 'dashboard', 'camper-dashboard-v2.html');
 const dashboardV2CssPath = path.join(root, 'dashboard', 'camper-dashboard-v2.css');
+const transitDarkPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-dark.png');
+const transitLightPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-light.png');
 const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
 const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
-const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8').trim();
+const dashboardV2MarkupSource = fs.readFileSync(dashboardV2MarkupPath, 'utf8');
+const transitDark = fs.readFileSync(transitDarkPath);
+const transitLight = fs.readFileSync(transitLightPath);
+const dashboardV2Markup = dashboardV2MarkupSource
+  .replace('__CC2_TRANSIT_DARK_DATA_URI__', `data:image/png;base64,${transitDark.toString('base64')}`)
+  .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', `data:image/png;base64,${transitLight.toString('base64')}`)
+  .trim();
 const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 const dashboard = dashboardTemplate
@@ -124,10 +132,16 @@ check((dashboardV2Markup.match(/class="cc2-nav-button/g) || []).length === 0 && 
 check(dashboard.includes("v2Nav(){return[{id:'home'") && dashboard.includes("{id:'system',name:'System'"), 'V2-Navigationsmodell umfasst Home bis System');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
+check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
 check(transitSymbols.length === 2, 'V2 bettet beide Transit-Liniensymbole updatefest ein');
 const transitHashes = transitSymbols.map(match => crypto.createHash('sha256').update(Buffer.from(match[1], 'base64')).digest('hex'));
-check(transitHashes[0] === '4aa46e7fc2153c29fef645c7e15f3798c2ee057362808ec1b0e190215b3973ef', 'Dunkles Transit-Liniensymbol entspricht exakt der Designquelle');
-check(transitHashes[1] === '0acab7dfc369153214694c7d808975c3b334fb8599190188229d20943178ad9d', 'Helles Transit-Liniensymbol entspricht exakt der Designquelle');
+check(transitHashes[0] === 'f54f528af869c6f3cc2dec1a7b90ae730b6df1d431f67aeb55328ba1fd6aa605', 'Dunkles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
+check(transitHashes[1] === '2b67063319cdb66767cca2229996b9e6161a849eddd6b0941fb5f984cf1a594f', 'Helles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
+check(dashboardV2Css.includes('padding: 0;') && dashboardV2Css.includes('border-radius: 0;') && dashboardV2Css.includes('.fs-app.design-v2.day { background: #edf2f4 !important; }'), 'V2 zeichnet Tag und Nacht ohne künstlichen Außenrahmen bis an alle vier Ecken');
+check(dashboardV2Markup.includes('id="cc2-close"') && dashboardV2Markup.includes('@click="v2Close"'), 'V2 besitzt oben rechts die dedizierte Schließen-/Zurück-Aktion');
+const v2CloseMethod = dashboard.match(/v2Close\(\)\{([^}]|\}(?!\s*,indevoltToggle))*\}/)?.[0] || '';
+check(v2CloseMethod.includes('window.history.back()') && v2CloseMethod.includes('window.close()') && v2CloseMethod.includes('window.location.replace'), 'V2-Schließen verwendet Verlauf, Fenster oder sichere Browsernavigation');
+check(!v2CloseMethod.includes('this.command') && !v2CloseMethod.includes('this.send'), 'V2-Schließen kann keinen Hardwarebefehl auslösen');
 
 for (const asset of ['/camper-assets/VehicleLightsLeft.png', '/camper-assets/VehicleLightsRight.png']) {
   check(dashboardV2Markup.includes(asset), `V2 verwendet reales Fahrzeugbild ${asset}`);

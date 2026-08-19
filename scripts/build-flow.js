@@ -6,6 +6,8 @@ const sourcePath = path.join(root, 'flows', 'CamperControl_NodeRED.json');
 const dashboardPath = path.join(root, 'dashboard', 'camper-dashboard.html');
 const dashboardV2MarkupPath = path.join(root, 'dashboard', 'camper-dashboard-v2.html');
 const dashboardV2CssPath = path.join(root, 'dashboard', 'camper-dashboard-v2.css');
+const transitDarkPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-dark.png');
+const transitLightPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-light.png');
 const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 fs.mkdirSync(path.dirname(publicPath), { recursive: true });
 const tabId = 'b7be72c8b69bf30e';
@@ -13,7 +15,11 @@ const dashboardId = 'dec0785f657dc7d1';
 
 let flows = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
 const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
-const dashboardV2Markup = fs.readFileSync(dashboardV2MarkupPath, 'utf8').trim();
+const transitDataUri = filePath => `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`;
+const injectTransitAssets = source => source
+  .replace('__CC2_TRANSIT_DARK_DATA_URI__', transitDataUri(transitDarkPath))
+  .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', transitDataUri(transitLightPath));
+const dashboardV2Markup = injectTransitAssets(fs.readFileSync(dashboardV2MarkupPath, 'utf8')).trim();
 const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const composeDashboard = () => {
   const markupToken = '<!-- CAMPERCONTROL_V2_MARKUP -->';
