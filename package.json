@@ -1,0 +1,13 @@
+{
+  "name": "campercontrol-node-red",
+  "version": "4.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-flow.js",
+    "validate": "node tests/validate-flow.js",
+    "test:live": "node tests/runtime-readonly.js",
+    "test": "npm run build && npm run validate"
+  }
+}
+
