@@ -24,4 +24,7 @@ if [ ! -x "$GRPCURL" ]; then
     exit 3
 fi
 
-exec "$GRPCURL" -max-time 5 -plaintext -d '{"get_diagnostics":{}}' "$DISH" SpaceX.API.Device.Device/Handle
+# Ein zusätzliches Byte ist ein absichtlicher Overflow-Marker: Der nachfolgende
+# Node-RED-Parser akzeptiert höchstens 64 KiB und verwirft 65.537 Bytes sicher.
+"$GRPCURL" -max-time 5 -plaintext -d '{"get_diagnostics":{}}' "$DISH" SpaceX.API.Device.Device/Handle 2>&1 \
+    | dd bs=65537 count=1 2>/dev/null

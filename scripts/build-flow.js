@@ -2235,6 +2235,251 @@ indevoltDirectory.func = indevoltDirectory.func.replace(
   "    const scanAge = Date.now() - Number(scan.started || 0);\n    if (scan.active && scanAge >= 0 && scanAge <= 10000) return null;"
 );
 
+// Every external response and every delayed action must have a hard memory
+// bound.  Device HTTP nodes return raw bytes so the Function can reject an
+// oversized body before JSON.parse allocates a second large object.
+for (const id of ['7a397c289a9a3fc2', 'a553dda137d3e5bf']) get(id).ret = 'bin';
+
+const indevoltMerge = get('51f0c8be7e1b4dbe');
+if (!indevoltMerge.func.includes('const MAX_DEVICE_RESPONSE_BYTES = 64 * 1024;')) {
+  indevoltMerge.func = indevoltMerge.func.replace(
+    "const STALE_MS = 90000;",
+    "const STALE_MS = 90000;\nconst MAX_DEVICE_RESPONSE_BYTES = 64 * 1024;"
+  ).replace(
+    "let payload = msg.payload;\nif (typeof payload === 'string') {",
+    `let payload = msg.payload;
+if (Buffer.isBuffer(payload)) {
+    if (payload.length > MAX_DEVICE_RESPONSE_BYTES) return null;
+    payload = payload.toString('utf8');
+} else if (typeof payload === 'string' && Buffer.byteLength(payload, 'utf8') > MAX_DEVICE_RESPONSE_BYTES) {
+    return null;
+}
+if (typeof payload === 'string') {`
+  ).replace(
+    "ip, serial: String(payload['0'] || previous.serial || ''), online: true,",
+    "ip, serial: String(payload['0'] || previous.serial || '').slice(0, 64), online: true,"
+  );
+}
+
+const vanturtleState = get('30de81a830592ed2');
+vanturtleState.func = `
+const MAX_DEVICE_RESPONSE_BYTES = 64 * 1024;
+const warnRateLimited = (key, text) => {
+    const now = Date.now();
+    const previous = Number(context.get(key) || 0);
+    if (now - previous < 60000) return;
+    context.set(key, now);
+    node.warn(text);
+};
+let state = msg.payload;
+if (Buffer.isBuffer(state)) {
+    if (state.length > MAX_DEVICE_RESPONSE_BYTES) return null;
+    state = state.toString('utf8');
+} else if (typeof state === 'string' && Buffer.byteLength(state, 'utf8') > MAX_DEVICE_RESPONSE_BYTES) {
+    return null;
+}
+if (typeof state === 'string') {
+    try { state = JSON.parse(state); }
+    catch (error) { warnRateLimited('_vanturtleInvalidAt', 'VanTurtle: ungültiger Statusframe'); return null; }
+}
+if (!state || typeof state !== 'object' || Array.isArray(state) || state.type === 'log') return null;
+if (typeof state.active !== 'boolean' || !Number.isFinite(Number(state.speed))) return null;
+
+const speedStep = Math.max(1, Math.min(10, Math.round(Number(state.speed))));
+const direction = Number(state.direction) === 1 ? 1 : 0;
+const adapters = flow.get('camperAdapters') || {};
+adapters['maxxfan.state'] = {
+    on: state.active,
+    speed: state.active ? speedStep * 10 : 0,
+    speedStep,
+    direction,
+    mode: direction === 1 ? 'reverse' : 'forward',
+    autoHold: state.auto_hold === true || Number(state.auto_hold) === 1,
+    voltage: Number.isFinite(Number(state.voltage)) ? Number(state.voltage) : null,
+    current: Number.isFinite(Number(state.current)) ? Number(state.current) : null,
+    power: Number.isFinite(Number(state.power)) ? Number(state.power) : null,
+    calibrated: state.has_calibration === true,
+    calibrating: state.is_calibrating === true,
+    seen: Date.now()
+};
+flow.set('camperAdapters', adapters);
+return { topic: 'tick' };
+`;
+
+// The Starlink helper emits at most 64 KiB (+ one overflow sentinel byte).
+// This second guard is deliberate defence in depth before JSON parsing and
+// before any value reaches persistent Node-RED context.
+get('camper_starlink_parse').func = `
+const MAX_STARLINK_RESPONSE_BYTES = 64 * 1024;
+let data = msg.payload;
+if (Buffer.isBuffer(data)) {
+    if (data.length > MAX_STARLINK_RESPONSE_BYTES) return null;
+    data = data.toString('utf8');
+} else if (typeof data === 'string' && Buffer.byteLength(data, 'utf8') > MAX_STARLINK_RESPONSE_BYTES) {
+    return null;
+}
+if (typeof data === 'string') {
+    try { data = JSON.parse(data); }
+    catch (error) { return null; }
+}
+if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+if (data.powered === false) {
+    const off = { powered: false, online: false, status: 'Ausgeschaltet', lastSeen: 0, updatedAt: Date.now(), alerts: [] };
+    flow.set('starlinkState', off);
+    return { topic: 'tick', _camperSource: 'starlink-off' };
+}
+const diagnostics = data.dishGetDiagnostics;
+if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return null;
+const text = (value, limit) => String(value == null ? '' : value).slice(0, limit);
+const alertObject = diagnostics.alerts && typeof diagnostics.alerts === 'object' && !Array.isArray(diagnostics.alerts) ? diagnostics.alerts : {};
+const alerts = Object.keys(alertObject).filter(key => alertObject[key] === true).slice(0, 32).map(key => text(key, 64));
+const rawAlignment = diagnostics.alignmentStats && typeof diagnostics.alignmentStats === 'object' && !Array.isArray(diagnostics.alignmentStats) ? diagnostics.alignmentStats : {};
+const alignment = {};
+for (const key of ['boresightAzimuthDeg', 'boresightElevationDeg', 'desiredBoresightAzimuthDeg', 'desiredBoresightElevationDeg', 'attitudeUncertaintyDeg']) {
+    if (Number.isFinite(Number(rawAlignment[key]))) alignment[key] = Number(rawAlignment[key]);
+}
+const disablementCode = text(diagnostics.disablementCode || 'UNKNOWN', 64);
+const state = {
+    powered: true,
+    online: true,
+    status: disablementCode && disablementCode !== 'OKAY' ? disablementCode : 'Online',
+    id: text(diagnostics.id, 128),
+    hardwareVersion: text(diagnostics.hardwareVersion, 64),
+    softwareVersion: text(diagnostics.softwareVersion, 128),
+    disablementCode,
+    stowed: diagnostics.stowed === true,
+    alerts,
+    alignment,
+    lastSeen: Date.now(),
+    updatedAt: Date.now(),
+    error: ''
+};
+flow.set('starlinkState', state);
+return { topic: 'tick', _camperSource: 'starlink-diagnostics' };
+`;
+
+// Coalesce every delayed refresh.  The AUTOTERM queue retains only the newest
+// normal command; an explicit stop first clears the pending item and is then
+// queued itself, so a safety stop can never be hidden by a telemetry burst.
+for (const id of ['19bb36cb2ea4a5c4', 'camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh']) get(id).drop = true;
+const autotermSession = get('152e2fdda301b9e4');
+if (!autotermSession.func.includes("node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);")) {
+  autotermSession.func = autotermSession.func.replace(
+    "    msg.payload = outgoing;\n    return [msg, null, null];",
+    `    msg.payload = outgoing;
+    if (outgoingCommand === 0x03) {
+        const stopMessage = Object.assign({}, msg, { payload: outgoing });
+        node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);
+        return null;
+    }
+    return [msg, null, null];`
+  );
+}
+
+// Service calls can restart processes and therefore need a fixed, in-memory
+// cooldown before fan-out.  The map contains only this static allowlist.
+get('camper_service_action_router').func = `
+const request = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+const action = String(request.action || '');
+const output = Array(9).fill(null);
+const notice = (level, text) => { output[5] = { topic: 'service.notice', payload: { level, text } }; };
+const cooldowns = { refresh: 3, wifiEnable: 5, wifiScan: 20, wifiConnect: 10, networkRepair: 60, bluetoothRepair: 30, nodeRedRestart: 90, cerboReboot: 180 };
+const accept = key => {
+    const now = Date.now();
+    const previous = context.get('serviceCooldowns') || {};
+    const waitMs = Number(cooldowns[key] || 30) * 1000;
+    if (now - Number(previous[key] || 0) < waitMs) { notice('info', 'Aktion läuft bereits oder wurde gerade ausgeführt.'); return false; }
+    const next = {};
+    for (const allowedKey of Object.keys(cooldowns)) if (Number.isFinite(Number(previous[allowedKey]))) next[allowedKey] = Number(previous[allowedKey]);
+    next[key] = now;
+    context.set('serviceCooldowns', next);
+    return true;
+};
+if (action === 'refresh') {
+    if (accept(action)) output[4] = { topic: 'service.refresh', payload: '' };
+    return output;
+}
+if (action === 'wifiEnable') {
+    if (typeof request.value !== 'boolean') { notice('error', 'Ungültiger WLAN-Schaltwert abgelehnt.'); return output; }
+    if (!accept(action)) return output;
+    output[6] = { payload: request.value ? 1 : 0 };
+    notice('info', request.value ? 'Externer WLAN-Uplink wird aktiviert.' : 'Externer WLAN-Uplink wird deaktiviert.');
+    return output;
+}
+if (action === 'wifiScan') {
+    if (!accept(action)) return output;
+    flow.set('camperExternalWifiScanUntil', Date.now() + 15000);
+    output[7] = { payload: 1 };
+    notice('info', 'WLAN-Suche wurde gestartet.');
+    return output;
+}
+if (action === 'wifiConnect') {
+    const service = String(request.service || '').slice(0, 256);
+    const ssid = String(request.ssid || '').slice(0, 64);
+    const passphrase = typeof request.passphrase === 'string' ? request.passphrase.slice(0, 63) : '';
+    if (!service || !ssid || !accept(action)) return output;
+    output[8] = { payload: { service, ssid, passphrase } };
+    return output;
+}
+const allowed = { networkRepair: 0, bluetoothRepair: 1, nodeRedRestart: 2, cerboReboot: 3 };
+if (!Object.prototype.hasOwnProperty.call(allowed, action)) {
+    notice('error', 'Unbekannte Service-Aktion abgelehnt.');
+    return output;
+}
+if (!accept(action)) return output;
+const labels = {
+    networkRepair: 'Netzwerk-Reparatur gestartet. Die Verbindung kann kurz unterbrochen werden.',
+    bluetoothRepair: 'Bluetooth-Dienst wird neu gestartet und der Adapterzustand geprüft.',
+    nodeRedRestart: 'Node-RED wird neu gestartet. Das Dashboard benötigt anschließend einige Minuten.',
+    cerboReboot: 'Cerbo-Neustart wurde ausgelöst.'
+};
+output[allowed[action]] = { topic: 'service.action', payload: '' };
+notice('info', labels[action]);
+return output;
+`;
+
+// Identische invalid frames must not produce an unbounded platform log.  The
+// fixed per-node timestamps are written at most once per minute.
+const installRateLimitedWarning = (id, replacements) => {
+  const node = get(id);
+  if (!node.func.includes('const warnRateLimited = (key, text) => {')) {
+    node.func = `const warnRateLimited = (key, text) => {
+    const now = Date.now();
+    const previous = Number(context.get(key) || 0);
+    if (now - previous < 60000) return;
+    context.set(key, now);
+    node.warn(text);
+};
+` + node.func;
+  }
+  for (const [before, after] of replacements) node.func = node.func.replace(before, after);
+};
+installRateLimitedWarning('163774a1197dbe4a', [
+  ["node.warn('AUTOTERM-Paket mit ungültiger Struktur oder CRC verworfen');", "warnRateLimited('_autotermPacketWarnAt', 'AUTOTERM-Paket mit ungültiger Struktur oder CRC verworfen');"]
+]);
+installRateLimitedWarning('152e2fdda301b9e4', [
+  ["node.warn('Ungültiger AUTOTERM-Sendepuffer verworfen');", "warnRateLimited('_autotermTxWarnAt', 'Ungültiger AUTOTERM-Sendepuffer verworfen');"],
+  ["node.warn('AUTOTERM-Empfangspaket mit ungültiger Struktur oder CRC verworfen');", "warnRateLimited('_autotermRxWarnAt', 'AUTOTERM-Empfangspaket mit ungültiger Struktur oder CRC verworfen');"]
+]);
+installRateLimitedWarning('e063b67ea21aacaf', [
+  ["node.warn('VanTurtle: nicht unterstützter MaxxFan-Befehl ' + action);", "warnRateLimited('_vanturtleCommandWarnAt', 'VanTurtle: nicht unterstützter MaxxFan-Befehl ' + action);"]
+]);
+
+state.func = state.func.replace(
+  "    node.error('snapshot_too_large');\n    return null;",
+  `    const lastOversizeLog = Number(context.get('_snapshotOversizeLogAt') || 0);
+    if (now - lastOversizeLog >= 60000) {
+        context.set('_snapshotOversizeLogAt', now);
+        node.error('snapshot_too_large');
+    }
+    return null;`
+).replace(/(?:const lastOversizeLog = Number\(context\.get\('_snapshotOversizeLogAt'\) \|\| 0\);\n\s*if \(now - lastOversizeLog >= 60000\) \{\n\s*context\.set\('_snapshotOversizeLogAt', now\);\n\s*node\.error\('snapshot_too_large'\);\n\s*\}\n\s*return null;)+/g, `const lastOversizeLog = Number(context.get('_snapshotOversizeLogAt') || 0);
+    if (now - lastOversizeLog >= 60000) {
+        context.set('_snapshotOversizeLogAt', now);
+        node.error('snapshot_too_large');
+    }
+    return null;`);
+
 // WebSocket-Sessions sind flüchtig und werden bereits nach 65 s ohne
 // Heartbeat entfernt. Zusätzlich verhindert das harte 32-Client-Limit, dass
 // ein lokaler fehlerhafter Browser beliebig viele Context-Einträge anlegt.

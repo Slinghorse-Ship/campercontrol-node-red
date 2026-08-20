@@ -12,6 +12,7 @@ const transitDarkPath = path.join(root, 'dashboard', 'assets', 'transit-line-sym
 const transitLightPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-light.png');
 const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const packagePath = path.join(root, 'package.json');
+const starlinkHelperPath = path.join(root, 'cerbo-service', 'starlink-read-status.sh');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
 const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
@@ -25,6 +26,7 @@ const dashboardV2Markup = dashboardV2MarkupSource
 const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+const starlinkHelperSource = fs.readFileSync(starlinkHelperPath, 'utf8');
 const dashboard = dashboardTemplate
   .replace('<!-- CAMPERCONTROL_V2_MARKUP -->', dashboardV2Markup)
   .replace('/* CAMPERCONTROL_V2_CSS */', dashboardV2Css);
@@ -1073,6 +1075,48 @@ check(get('external_wifi_connect_prepare').func.includes('JSON.stringify({ servi
 check(!flows.some(node => node.type === 'exec' && /wifi|connman/i.test(`${node.id} ${node.name || ''} ${node.command || ''}`)), 'WLAN-Passwort gelangt nicht in Exec-Argumente');
 check(get('camper_service_action_router').outputs === 9, 'Service-Router besitzt neun Ausgänge');
 check((get('camper_service_action_router').wires?.[8] || []).includes('external_wifi_connect_prepare'), 'wifiConnect führt nur zum sicheren Prepare-Node');
+check(['19bb36cb2ea4a5c4', 'camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh'].every(id => get(id).drop === true), 'AUTOTERM- und Service-Delays koaleszieren Bursts ohne Queuewachstum');
+check(get('152e2fdda301b9e4').func.includes("node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);"), 'AUTOTERM-Stop leert die begrenzte Warteschlange und bleibt priorisiert');
+check(get('7a397c289a9a3fc2').ret === 'bin' && get('a553dda137d3e5bf').ret === 'bin', 'Geräte-HTTP-Antworten bleiben bis zum Byte-Limit ungeparst');
+check(get('51f0c8be7e1b4dbe').func.includes('MAX_DEVICE_RESPONSE_BYTES = 64 * 1024') && get('51f0c8be7e1b4dbe').func.includes('.slice(0, 64)'), 'INDEVOLT begrenzt Antwort und persistierte Seriennummer');
+check(get('30de81a830592ed2').func.includes('MAX_DEVICE_RESPONSE_BYTES = 64 * 1024'), 'VanTurtle begrenzt jeden REST-/WebSocket-Statusframe');
+check(starlinkHelperSource.includes('dd bs=65537 count=1') && get('camper_starlink_parse').func.includes('MAX_STARLINK_RESPONSE_BYTES = 64 * 1024'), 'Starlink-Ausgabe ist im Prozess und vor JSON/Context hart begrenzt');
+check(get('camper_starlink_parse').func.includes(".slice(0, 32)") && get('camper_starlink_parse').func.includes("'attitudeUncertaintyDeg'"), 'Starlink persistiert höchstens 32 Alarme und nur bekannte Alignment-Skalare');
+for (const id of ['163774a1197dbe4a', '152e2fdda301b9e4', 'e063b67ea21aacaf', '30de81a830592ed2']) {
+  check(get(id).func.includes('warnRateLimited'), `${id} drosselt ungültige Hot-Path-Meldungen`);
+}
+check(get('ada9353cc6ea4a4c').func.includes("context.get('_snapshotOversizeLogAt')") && get('ada9353cc6ea4a4c').func.includes('now - lastOversizeLog >= 60000'), 'Snapshot-Oversizefehler wird höchstens einmal pro Minute geloggt');
+
+const runServiceActions = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('camper_service_action_router').func || '');
+const serviceCooldownValues = new Map();
+const serviceContext = { get: key => serviceCooldownValues.get(key), set: (key, value) => serviceCooldownValues.set(key, value) };
+const serviceFlow = { get() {}, set() {} };
+let networkExecCount = 0;
+for (let index = 0; index < 1000; index += 1) {
+  const output = runServiceActions({ payload: { action: 'networkRepair' } }, serviceFlow, serviceContext, {}, {}, {});
+  if (output?.[0]) networkExecCount += 1;
+}
+check(networkExecCount === 1 && Object.keys(serviceCooldownValues.get('serviceCooldowns') || {}).length <= 8, '1.000 Service-Befehle erzeugen genau einen Prozess und einen festen Cooldown-State');
+
+const noWriteFlow = () => {
+  const writes = [];
+  return { writes, api: { get: () => ({}), set: (key, value) => writes.push([key, value]) } };
+};
+const runStarlinkParser = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('camper_starlink_parse').func || '');
+const oversizedStarlinkFlow = noWriteFlow();
+check(runStarlinkParser({ payload: Buffer.alloc(64 * 1024 + 1, 120) }, oversizedStarlinkFlow.api, {}, {}, {}, {}) == null && oversizedStarlinkFlow.writes.length === 0, 'Starlink >64 KiB wird vor JSON und Context verworfen');
+const manyAlerts = Object.fromEntries(Array.from({ length: 50 }, (_value, index) => [`alert-${index}`, true]));
+const normalStarlinkFlow = noWriteFlow();
+runStarlinkParser({ payload: Buffer.from(JSON.stringify({ dishGetDiagnostics: { id: 'x'.repeat(300), hardwareVersion: 'h'.repeat(100), softwareVersion: 's'.repeat(300), disablementCode: 'OKAY', alerts: manyAlerts, alignmentStats: { boresightAzimuthDeg: 12, unknownHuge: 'x'.repeat(1000) } } })) }, normalStarlinkFlow.api, {}, {}, {}, {});
+const normalizedStarlink = normalStarlinkFlow.writes.find(([key]) => key === 'starlinkState')?.[1];
+check(normalizedStarlink?.alerts?.length === 32 && normalizedStarlink.id.length === 128 && normalizedStarlink.hardwareVersion.length === 64 && normalizedStarlink.alignment?.boresightAzimuthDeg === 12 && normalizedStarlink.alignment?.unknownHuge === undefined, 'Starlink-Normalzustand ist vollständig gecappt und gewhitelistet');
+
+const runIndevoltMerge = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('51f0c8be7e1b4dbe').func || '');
+const oversizedIndevoltApi = noWriteFlow();
+check(runIndevoltMerge({ _indevoltIp: '172.24.24.159', payload: Buffer.alloc(64 * 1024 + 1, 120) }, oversizedIndevoltApi.api, {}, {}, {}, {}) == null && oversizedIndevoltApi.writes.length === 0, 'INDEVOLT >64 KiB erzeugt keinen Context-Write');
+const runVanturtleState = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('30de81a830592ed2').func || '');
+const oversizedVanturtleApi = noWriteFlow();
+check(runVanturtleState({ payload: Buffer.alloc(64 * 1024 + 1, 120) }, oversizedVanturtleApi.api, { get() {}, set() {} }, { warn() {} }, {}, {}) == null && oversizedVanturtleApi.writes.length === 0, 'VanTurtle >64 KiB erzeugt keinen Context-Write');
 check(get('6265bf6f9bade1e5').func.includes("'wifiConnect'"), 'Zentraler Router kennt wifiConnect');
 check(get('external_wifi_state_update').func.includes('source.wifi'), 'WLAN-Parser verarbeitet die verschachtelte Venus-Struktur');
 check(get('ada9353cc6ea4a4c').func.includes('externalWifi: externalWifiStatus'), 'Snapshot enthält strukturierten WLAN-Status');
