@@ -371,6 +371,13 @@ check(batteryPowerInput.type === 'victron-input-battery'
 check(batteryPowerInput.onlyChanges === false
   && targetsOf(batteryPowerInput.id).includes('357fe2bdfa339671')
   && get('357fe2bdfa339671').rules?.some(rule => rule.p === 'topic' && rule.to === 'battery.power'), 'Bestehender Batteriepfad behält Polling und Zieltopic bei');
+const batteryTimeToGoInput = get('e5ad58b50715f803');
+check(batteryTimeToGoInput.type === 'victron-input-battery'
+  && batteryTimeToGoInput.service === 'com.victronenergy.battery/277'
+  && batteryTimeToGoInput.path === '/TimeToGo'
+  && batteryTimeToGoInput.onlyChanges === false
+  && targetsOf(batteryTimeToGoInput.id).includes('b63589bfb672e634')
+  && get('b63589bfb672e634').rules?.some(rule => rule.p === 'topic' && rule.to === 'battery.timeToGo'), 'SmartShunt-Restlaufzeit wird gepollt und kann bei unverändertem D-Bus-Wert nicht veralten');
 const dcSystemPowerInput = get('6b67bafd0f8833d1');
 check(dcSystemPowerInput.type === 'victron-input-system'
   && dcSystemPowerInput.service === 'com.victronenergy.system'
