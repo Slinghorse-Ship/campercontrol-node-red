@@ -66,12 +66,17 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
 - Das Dashboard enthält ausschließlich Transit Horizon V2 mit Home, Licht,
   Klima, Energie, Wasser und System. V1-Markup, Designauswahl und
   `ui.designVersion` werden weder ausgeführt noch im Snapshot veröffentlicht.
-- Ein Wisch vom linken Bildschirmrand öffnet das 340-px-Favoritenpanel; ein
-  Wisch vom rechten Rand das 560-px-DWD-Panel. Es gibt keine sichtbaren Griffe.
+- Ein Wisch vom linken Bildschirmrand oder die 42-px-Sterntaste neben der Uhr
+  öffnet das 340-px-Favoritenpanel. Rechts öffnen Edge-Wisch oder Wettertaste
+  das 560-px-DWD-Panel. Die unsichtbaren Edge-Zonen bleiben ohne Griff;
   Gegenwisch, Hintergrund-Tipp und Schließen-Taste schließen das Panel.
-- Favoriten lesen ausschließlich `state.ui.quickAccess` und verwenden dessen
-  bereits validierte `available`-/`command`-Daten. Kurzer Tipp schaltet, langer
-  Druck öffnet die passende vorhandene Detailseite und erzeugt keinen Befehl.
+- Home-Schnellzugriff (`state.ui.quickAccess`) und persönliche Favoriten
+  (`state.ui.favorites`) sind getrennte, vom Cerbo persistierte Auswahlen. Beide
+  verwenden den einmal veröffentlichten `state.ui.quickAccessOptions`-Katalog
+  und denselben validierten Command-Resolver. `Anpassen` auf Home schreibt nur
+  `ui.quickAccessIds`; der Editor im Sternpanel schreibt nur `ui.favoriteIds`
+  (jeweils höchstens vier). Kurzer Tipp schaltet, langer Druck im Favoritenpanel
+  öffnet die passende vorhandene Detailseite.
 - Wetter wird nur aus `com.victronenergy.campercontrol/0 /State/Weather`
   übernommen (Schema 1, höchstens 16 KiB). Node-RED führt keinen Wetter-HTTP-
   Abruf und keinen Dashboard-Timer aus; `compact_state` transportiert Wetter
@@ -96,9 +101,10 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   Punkte begrenzt: 24 Stunden Minutendaten, 30 Tage Viertelstundenwerte und
   365 Tageswerte. Das deckt Tagesdiagnose, Monatstrend und Jahresvergleich ab,
   ohne mehrere MiB alten Context auf dem Cerbo zu halten.
-- V2 zeichnet auf 800 × 480 ohne künstlichen Geräte-Rand bis an alle vier
-  Displayecken. Das Transit-Liniensymbol besitzt in Tag und Nacht echte
-  Transparenz und denselben kompakten FORD-Grill wie die SYNC-App.
+- V2 zeichnet auf dem GX Touch bei 800 × 480 und im Browser über die gesamte
+  verfügbare Fläche ohne feste 800-px-Kappe, künstlichen Geräte-Rand oder
+  schwarze Reststreifen. Das Transit-Liniensymbol besitzt in Tag und Nacht
+  echte Transparenz und denselben kompakten FORD-Grill wie die SYNC-App.
 - Die Schaltfläche oben rechts geht im Browser zuerst im Verlauf zurück,
   schließt ein von einer anderen Seite geöffnetes Fenster oder wechselt als
   sichere letzte Rückfallebene zur Victron-Startseite. Sie sendet niemals einen
@@ -107,6 +113,20 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   INDEVOLT, Orion, MultiPlus, STAR-Power, Autoterm, MaxxFan und Wasser lesen den
   vorhandenen Snapshot. Nicht verfügbare Werte erscheinen als Strich; Orion
   und nicht bestätigte Schalter sind deaktiviert.
+- Die Home-Kachel `DC-Verbrauch` folgt wie das originale Victron-Widget
+  `Global.system.dc.power` exakt dem SystemCalc-Pfad
+  `com.victronenergy.system /Dc/System/Power`. Der direkte SmartShunt-Wert
+  bleibt getrennt als `energy.battery.power` erhalten und zeigt am SOC-Ring mit
+  Richtung und Leistung, ob die Batterie lädt, entlädt oder sich innerhalb der
+  5-W-Ruhezone befindet. Die daneben klar beschriftete Restlaufzeit kommt direkt
+  aus `energy.battery.timeToGoSeconds`: ab 24 Stunden als Tage, darunter als
+  Stunden; beim Laden steht `Lädt`, bei fehlender SmartShunt-Prognose `–`.
+  `Solar gesamt` ist ausschließlich `com.victronenergy.system /Dc/Pv/Power`;
+  INDEVOLT bleibt als getrennte Quelle in den Energiedetails sichtbar.
+- Der Shelly 1PM Gen4 für die INDEVOLT-Netzfreigabe wird selbst erst mit 230 V
+  versorgt. Fehlt `com.victronenergy.acload/50` bei ausgeschaltetem 230 V, ist
+  das deshalb ein erwarteter Zustand; die Freigabe bleibt sichtbar deaktiviert
+  und wird nicht als Cerbo-/Flowfehler gewertet.
 - Orion `/Mode` wird als gelatchter Steuerzustand behandelt: Der letzte
   validierte Wert `1` oder `4` bleibt bei frischer Orion-Telemetrie gültig, auch
   wenn sich `/Mode` länger als das allgemeine 90-s-Datenfenster nicht ändert.
@@ -117,3 +137,19 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   und Karten sowie den permanenten Dimmer. Die beiden Fahrzeugbilder werden
   weiterhin unter `/camper-assets/VehicleLightsLeft.png` und
   `/camper-assets/VehicleLightsRight.png` vom bestehenden Flow ausgeliefert.
+  Bild, sichtbare Lichtkörper und unsichtbare Touchflächen teilen ein einziges
+  560×360-Koordinatensystem; die beiden Seitenlampen und die quadratische
+  Hecklampe liegen dadurch direkt auf den realen Dachträger-Leuchten.
+- Die Klima-Betriebsart ist ein Cerbo-eigener Dreiwegeschalter: `Aus` stoppt
+  Autoterm und MaxxFan, `Manuell` gibt die Geräte für Einzelbedienung frei und
+  beendet nur zuvor von der Automatik gestartete Geräte, `Auto` verwendet die
+  vorhandene temperaturgeführte Regelung. Browser und Remote-Clients senden
+  dafür ausschließlich den Settings-Intent `climateAutomation.controlMode`.
+- `Camping`, `Nacht` und `Alles aus` besitzen Cerbo-eigene Lichtprofile unter
+  `lightingScenes`. `Anpassen` auf der Lichtseite speichert je realem Lichtkreis
+  `unverändert`, `aus`, `ein` oder 1–100 % über den vorhandenen Settings-Pfad;
+  beim Speichern wird kein Hardwarebefehl gesendet. Beim späteren Start ersetzt
+  das Profil ausschließlich die Lichtaktionen der Szene. Bereits vorhandene
+  Nicht-Licht-Aktionen wie Wasserpumpe, 230 V, Autoterm oder MaxxFan bleiben
+  erhalten und der zentrale Router prüft die gesamte Szene vor dem ersten
+  Ausgang atomar.

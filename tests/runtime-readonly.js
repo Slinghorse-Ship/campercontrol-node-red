@@ -84,9 +84,9 @@ const ruuviAssertions = {
 const shellyService = 'com.victronenergy.acload/50';
 const shellyValue = read(shellyService, '/SwitchableOutput/0/State');
 const shellyNode = byId.get('shelly_grid_state_out') || {};
+const shellyPowered = Boolean(cache[shellyService]);
 const shellyAssertions = {
-  serviceExists: Boolean(cache[shellyService]),
-  stateReadable: Number(shellyValue) === 0 || Number(shellyValue) === 1,
+  optionalPowerStateHandled: !shellyPowered || Number(shellyValue) === 0 || Number(shellyValue) === 1,
   flowServiceMatches: shellyNode.service === shellyService,
   flowPathMatches: shellyNode.path === '/SwitchableOutput/0/State'
 };
@@ -114,7 +114,7 @@ const lightAssertions = {
   rearStateOnly: rearNode.path === '/SwitchableOutput/10/State',
   distinctPaths: warningNode.path !== rearNode.path,
   noWarningDimmingOutput: !flows.some(node => node.type === 'victron-output-switch' && node.path === '/SwitchableOutput/7/Dimming'),
-  warningSingleWire: JSON.stringify(warningController.wires) === JSON.stringify([['6a22df3c7ebe02fc']]),
+  warningPhysicalAndClockWiresExact: JSON.stringify(warningController.wires) === JSON.stringify([['6a22df3c7ebe02fc'], ['199eabbda79b02de']]),
   routerCh8Exact: JSON.stringify(starRouter.wires?.[7] || []) === JSON.stringify(['959137a3ca444583']),
   routerCh11Exact: JSON.stringify(starRouter.wires?.[10] || []) === JSON.stringify(['4afab948e3bba101'])
 };
@@ -155,7 +155,7 @@ console.log(JSON.stringify({
   liveReadOnly: true,
   wifi: { networkCount: networks.length, connectedSsid: connected?.ssid || '', state: wifi.external_wifi_state, signal: wifi.external_wifi_signal },
   ruuvi: { service: temperatureService, deviceName: temperatureValues.deviceName, temperature: temperatureValues.temperature, floorConfigured: false },
-  shelly: { service: shellyService, state: shellyValue },
+  shelly: { service: shellyService, powered: shellyPowered, state: shellyValue, expectedOfflineWithout230V: !shellyPowered },
   orion: { service: orionService, mode: read(orionService, '/Mode'), state: read(orionService, '/State'), voltage: read(orionService, '/Dc/0/Voltage') },
   lights: { warningPath: warningNode.path, rearPath: rearNode.path, stateOnly: lightAssertions.noWarningDimmingOutput },
   simulatedEndToEnd: {

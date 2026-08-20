@@ -182,6 +182,7 @@ const snapshotFunction = get('ada9353cc6ea4a4c').func || '';
 check(settingsFunction.includes('cfg.version = 5'), 'Konfigurationsschema ist v5');
 check(settingsFunction.includes('source.ui.quickAccessLightIds.map'), 'v4-Lichtbelegungen werden auf generische IDs migriert');
 check(settingsFunction.includes('cfg.ui = { quickAccessIds,'), 'Settings speichern generische Schnellzugriff-IDs');
+check(settingsFunction.includes('cfg.ui = { quickAccessIds, favoriteIds,') && settingsFunction.includes('favoriteSource.map') && settingsFunction.includes('.slice(0, 4)'), 'Settings validieren und speichern höchstens vier eigenständige Favoriten');
 check(settingsFunction.includes('delete source.ui.designVersion;'), 'Settings entfernen alte V1/V2-Auswahl bei der Migration');
 for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main']) {
   check(settingsFunction.includes(id), `Generischer Standard-Schnellzugriff enthält ${id}`);
@@ -189,13 +190,16 @@ for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_lef
 for (const target of ['device:inverter', 'device:orion', 'device:indevolt_grid', 'device:heater', 'device:maxxfan']) {
   check(snapshotFunction.includes(target), `Schnellzugriff-Katalog enthält ${target}`);
 }
-check(snapshotFunction.includes('quickAccessOptions, externalWifiTileEnabled'), 'Snapshot veröffentlicht Auswahl, Katalog und aufgelöste Aktionen');
+check(snapshotFunction.includes('quickAccessOptions, favoriteIds, favorites, externalWifiTileEnabled'), 'Snapshot veröffentlicht getrennte Auswahl und aufgelöste Favoriten über den gemeinsamen Katalog');
+check(snapshotFunction.includes('const resolveQuickOption = id =>') && snapshotFunction.includes('quickAccessIds.map(resolveQuickOption)') && snapshotFunction.includes('favoriteIds.map(resolveQuickOption)'), 'Schnellzugriff und Favoriten teilen genau einen sicheren Action-Resolver');
 check(!snapshotFunction.includes('designVersion:'), 'Snapshot veröffentlicht keine veraltete Designauswahl');
 check(snapshotFunction.includes("target: 'waterPump', action: 'set'"), 'Wasserpumpen-Schnellzugriff nutzt den validierten Router');
 check(snapshotFunction.includes("target: 'scene', action: 'run'"), 'Szenen sind als Schnellzugriff auswählbar');
-check(dashboard.includes('v-for="q in quickItems"'), 'Dashboard rendert generische Schnellzugriffe');
+check(dashboard.includes('quickItems(){return Array.isArray(this.s.ui?.quickAccess)?this.s.ui.quickAccess:[]}'), 'Home-Schnellzugriff behält unverändert state.ui.quickAccess');
+check(dashboard.includes('favoriteItems(){return Array.isArray(this.s.ui?.favorites)?this.s.ui.favorites:[]}') && dashboard.includes('v-for="q in favoriteItems"'), 'Linkes Sternpanel rendert ausschließlich die getrennten state.ui.favorites');
 check(dashboard.includes('v2FavoriteClick(q,$event)') && dashboard.includes('this.quickActivate(item)'), 'Favoriten führen ausschließlich den vom Backend aufgelösten Befehl aus');
-check(!dashboard.includes('settingsPatch({ui:{quickAccessIds:ids}})'), 'Dashboard verändert die zentral konfigurierte Favoritenauswahl nicht');
+const favoriteToggleMethod = dashboard.match(/v2ToggleFavoriteOption\(item\)\{([^}]|\}(?!,v2EdgeStart))*\}/)?.[0] || '';
+check(favoriteToggleMethod.includes('settingsPatch({ui:{favoriteIds:next}})') && !favoriteToggleMethod.includes('quickAccessIds'), 'Favoriteneditor schreibt nur ui.favoriteIds und lässt den Home-Schnellzugriff unangetastet');
 check(!dashboard.includes('designV2') && !dashboard.includes('setDesignVersion'), 'Dashboard ist ausschließlich V2');
 check((dashboard.match(/command\(target,action,value,extra=/g) || []).length === 1, 'V2 besitzt exakt eine gemeinsame Command-Methode');
 check(dashboard.includes('id="campercontrol-v2-horizon"'), 'Dashboard enthält ausschließlich die eigenständige Transit-Horizon-Gestaltung');
@@ -216,17 +220,36 @@ for (const page of ['home', 'lights', 'climate', 'energy', 'water', 'system']) {
 check((dashboardV2Markup.match(/class="cc2-nav-button/g) || []).length === 0 && dashboardV2Markup.includes('v-for="item in v2Nav"'), 'V2 rendert die sechs Ziele aus genau einem Navigationsmodell');
 check(dashboard.includes("v2Nav(){return[{id:'home'") && dashboard.includes("{id:'system',name:'System'"), 'V2-Navigationsmodell umfasst Home bis System');
 
-// Unsichtbare Edge-Swipe-Panels: kein Griff, kein eigener Datenabruf und keine
-// Timer. Favoriten kommen aus dem zentralen Snapshot; Wetter ist read-only.
+// Edge-Swipe-Panels behalten unsichtbare Hotzones und erhalten zusätzlich zwei
+// lokale Touch-Ziele im Header. Favoriten kommen aus dem zentralen Snapshot;
+// Wetter ist read-only und kein Panel-Button darf Hardwarebefehle erzeugen.
 check(dashboardV2Markup.includes('@pointerdown="v2EdgeStart"') && dashboardV2Markup.includes('@pointermove="v2EdgeMove"') && dashboardV2Markup.includes('@pointerup="v2EdgeEnd"'), 'Beide Panels werden über vollständige Edge-Swipe-Gesten geöffnet');
 check(dashboard.includes("x<=24") && dashboard.includes("x>=rect.width-24") && dashboard.includes('Math.abs(dx)<64'), 'Unsichtbare Hotzones sind 24 px breit und erfordern 64 px Wischweg');
 check(dashboard.includes("mode==='close-favorites'&&dx<0") && dashboard.includes("mode==='close-weather'&&dx>0"), 'Gegenwisch schließt linkes und rechtes Panel');
 check(dashboardV2Markup.includes('class="cc2-panel-scrim"') && (dashboardV2Markup.match(/@click="v2ClosePanel"/g) || []).length >= 3, 'Scrim und beide Close-Schaltflächen schließen Panels');
-check(!dashboardV2Markup.includes('cc2-panel-handle') && !dashboardV2Markup.includes('Panel öffnen'), 'Es gibt keinen sichtbaren Griff oder Öffnen-Button');
+check(!dashboardV2Markup.includes('cc2-panel-handle'), 'Unsichtbare Edge-Zonen bleiben ohne sichtbaren Griff');
+check((dashboardV2Markup.match(/cc2-header-panel-button/g) || []).length === 2, 'Header enthält genau zwei sichtbare Panel-Schaltflächen');
+check(dashboardV2Markup.includes('@click.stop="v2TogglePanel(\'favorites\')"') && dashboardV2Markup.includes('@click.stop="v2TogglePanel(\'weather\')"'), 'Stern und Wetterwolke öffnen ihre vorhandenen Panels lokal');
+check(dashboardV2Markup.includes('href="#cc2-favorite-star"') && dashboardV2Markup.includes('href="#cc2-weather-partly"'), 'Header verwendet Stern und moderne Wetterwolke aus dem lokalen SVG-Satz');
+check(dashboardV2Markup.includes('aria-controls="cc2-favorites-panel"') && dashboardV2Markup.includes('aria-controls="cc2-weather-panel"') && (dashboardV2Markup.match(/:aria-pressed="v2Panel===/g) || []).length === 2, 'Beide Touch-Ziele geben Ziel und aktiven Zustand barrierefrei aus');
+check(/cc2-online[\s\S]*cc2-favorites-button[\s\S]*cc2-weather-button[\s\S]*cc2-theme-button[\s\S]*cc2-close-button/.test(dashboardV2Markup), 'Panel-Tasten liegen direkt hinter der Uhr und vor Theme/Schließen');
+check(dashboardV2Css.includes('.cc2-header-panel-button {') && dashboardV2Css.includes('width: 42px;') && dashboardV2Css.includes('height: 42px;') && dashboardV2Css.includes('.cc2-favorites-button.is-active') && dashboardV2Css.includes('.cc2-weather-button.is-active'), '800x480-Header bietet 42-px-Touchziele mit sichtbarem Aktivzustand');
+const headerReservedAt800 = 28 + 60 + 55 + 72 + 42 + 42 + 38 + 38;
+check(dashboardV2Css.includes('width: 72px;') && dashboardV2Css.includes('flex: 0 0 72px;') && 800 - headerReservedAt800 >= 300, '800x480-Header reserviert feste Breiten und lässt mindestens 300 px für den Seitentitel');
+const v2TogglePanelMethod = dashboard.match(/v2TogglePanel\(panel\)\{([^}]|\}(?!,v2ClosePanel))*\}/)?.[0] || '';
+check(v2TogglePanelMethod.includes("panel!=='favorites'&&panel!=='weather'") && v2TogglePanelMethod.includes("this.v2Panel===panel?'':panel"), 'Ein einzelner validierter Panel-State hält die Drawer gegenseitig exklusiv');
+check(!v2TogglePanelMethod.includes('this.command') && !v2TogglePanelMethod.includes('this.send'), 'Header-Panel-Tasten können keinen Backend- oder Hardwarebefehl auslösen');
 check(dashboardV2Css.includes('width: min(340px, calc(100% - 44px))') && dashboardV2Css.includes('width: min(560px, calc(100% - 44px))'), 'Favoriten- und Wetterpanel besitzen 340/560 px Zielbreite');
-check(dashboardV2Markup.includes('v-for="q in quickItems"') && dashboardV2Markup.includes(':aria-disabled="!q.available"'), 'Favoriten verwenden Auswahl, Zustand und Gating aus state.ui.quickAccess');
+check(dashboardV2Markup.includes('v-for="q in favoriteItems"') && dashboardV2Markup.includes(':aria-disabled="!q.available"'), 'Favoriten verwenden Auswahl, Zustand und Gating aus state.ui.favorites');
+check(dashboardV2Markup.includes('v-for="option in v2FavoriteOptions"') && dashboard.includes('this.s.ui?.quickAccessOptions'), 'Favoriteneditor verwendet den vorhandenen Schnellzugriffskatalog ohne zweites Options-Payload');
+check(dashboardV2Markup.includes("v2FavoriteEdit?'Favoriten auswählen':'Antippen zum Schalten'") && dashboardV2Css.includes('gap: 12px;') && dashboardV2Css.includes('text-overflow: ellipsis;'), 'Favoriten-Unterzeile bleibt kurz, begrenzt und kollisionsfrei neben Anpassen');
 check(dashboard.includes('Date.now()-press.started>=600') && dashboard.includes('v2OpenFavoriteDetail(item)'), 'Langes Drücken öffnet nach 600 ms die vorhandene Detailseite ohne Timer');
-check(!dashboardV2Markup.includes('cc2-quick-panel'), 'Home dupliziert die Favoriten nicht als sichtbare Schnellzugriffsleiste');
+check(dashboardV2Markup.includes('class="cc2-card cc2-quick-panel"') && dashboardV2Markup.includes('v-for="q in v2QuickSlots"') && dashboardV2Markup.includes('@click="quickActivate(q)"'), 'Home zeigt den eigenen Schnellzugriff immer als vier kompakte Live-Karten');
+check(dashboard.includes("while(items.length<4)items.push({id:'quick-placeholder-'") && dashboardV2Markup.includes("q.placeholder?'is-placeholder':''"), 'Noch nicht geladene oder freie Schnellzugriffplätze bleiben sichtbar statt die Zeile verschwinden zu lassen');
+check(dashboardV2Markup.indexOf('v-for="q in v2QuickSlots"') < dashboardV2Markup.indexOf('v-for="q in favoriteItems"'), 'Home-Schnellzugriff und linkes Favoritenpanel sind zwei getrennte Renderlisten');
+check(dashboardV2Markup.includes('@click="v2OpenQuickEditor"') && dashboardV2Markup.includes('Favoriten im Sternpanel bleiben unverändert.'), 'Home besitzt einen eigenen, klar vom Favoritenpanel getrennten Schnellzugriff-Editor');
+check(dashboard.includes('settingsPatch({ui:{quickAccessIds:ids}})') && dashboard.includes('this.v2QuickDraft.slice(0,4)'), 'Schnellzugriff-Editor speichert höchstens vier eigene IDs über Settings');
+check(dashboardV2Css.includes('grid-template-rows: minmax(0, 1fr) 92px;') && dashboardV2Css.includes('.cc2-quick-grid { height: calc(100% - 22px);'), '800x480-Home reserviert eine feste 92-px-Schnellzugriffszeile ohne Seitenüberlauf');
 const dashboardScript = dashboard.match(/<script>\s*([\s\S]*?)\s*<\/script>/)?.[1] || '';
 check(!/\b(?:setTimeout|setInterval)\s*\(/.test(dashboardScript), 'V2-Dashboard erzeugt keine Browser-Timer');
 check(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\b/.test(dashboardScript), 'V2-Dashboard startet keinen eigenen Daten- oder Wettertransport');
@@ -282,7 +305,11 @@ check(transitSymbols.length === 2, 'V2 bettet beide Transit-Liniensymbole update
 const transitHashes = transitSymbols.map(match => crypto.createHash('sha256').update(Buffer.from(match[1], 'base64')).digest('hex'));
 check(transitHashes[0] === 'f54f528af869c6f3cc2dec1a7b90ae730b6df1d431f67aeb55328ba1fd6aa605', 'Dunkles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
 check(transitHashes[1] === '2b67063319cdb66767cca2229996b9e6161a849eddd6b0941fb5f984cf1a594f', 'Helles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
-check(dashboardV2Css.includes('padding: 0;') && dashboardV2Css.includes('border-radius: 0;') && dashboardV2Css.includes('.fs-app.day { background: #edf2f4 !important; }'), 'V2 zeichnet Tag und Nacht ohne künstlichen Außenrahmen bis an alle vier Ecken');
+check(dashboardV2Css.includes('padding: 0;')
+  && dashboardV2Css.includes('border-radius: 0;')
+  && dashboardV2Css.includes('position: fixed !important;')
+  && dashboardV2Css.includes('inset: 0 !important;')
+  && dashboardV2Css.includes('.fs-app.day { background: #edf2f4 !important; }'), 'V2 löst sich aus dem Dashboard-Grid und zeichnet Tag/Nacht bis an alle vier Browserkanten');
 check(dashboardV2Markup.includes('id="cc2-close"') && dashboardV2Markup.includes('@click="v2Close"'), 'V2 besitzt oben rechts die dedizierte Schließen-/Zurück-Aktion');
 const v2CloseMethod = dashboard.match(/v2Close\(\)\{([^}]|\}(?!\s*,indevoltToggle))*\}/)?.[0] || '';
 check(v2CloseMethod.includes('window.history.back()') && v2CloseMethod.includes('window.close()') && v2CloseMethod.includes('window.location.replace'), 'V2-Schließen verwendet Verlauf, Fenster oder sichere Browsernavigation');
@@ -291,9 +318,13 @@ check(!v2CloseMethod.includes('this.command') && !v2CloseMethod.includes('this.s
 for (const asset of ['/camper-assets/VehicleLightsLeft.png', '/camper-assets/VehicleLightsRight.png']) {
   check(dashboardV2Markup.includes(asset), `V2 verwendet reales Fahrzeugbild ${asset}`);
 }
-for (const coordinate of ['left:60.85%;top:35.3%', 'left:79.4%;top:4.6%', 'left:74%;top:0', 'left:28.1%;top:7.8%', 'left:30.9%;top:35.3%', 'left:7.7%;top:6.5%', 'left:3.6%;top:0', 'left:45.7%;top:3.9%']) {
+for (const coordinate of ['left:63.7%;top:32.2%', 'left:77.69%;top:3.19%', 'left:73.29%;top:0', 'left:27.56%;top:6.41%', 'left:31.72%;top:32.2%', 'left:7.78%;top:4.86%', 'left:3.83%;top:0', 'left:44.66%;top:10.17%']) {
   check(dashboardV2Markup.includes(coordinate), `V2-Fotohotspot entspricht der Designquelle: ${coordinate}`);
 }
+for (const geometry of ['x1="168" y1="49" x2="317" y2="49"', 'x="368" y="34" width="16" height="7"', 'x="432" y="5" width="14" height="14"', 'x1="263" y1="60" x2="403" y2="65"', 'x="63" y="41" width="16" height="7"', 'x="43" y="5" width="14" height="14"']) {
+  check(dashboardV2Markup.includes(geometry), `Sichtbarer Lichtkörper sitzt in exakter 560x360-Assetgeometrie: ${geometry}`);
+}
+check(dashboardV2Markup.includes('class="cc2-transit-canvas"') && dashboardV2Css.includes('aspect-ratio: 560 / 360;'), 'Bild, SVG-Lichtkörper und Touchzonen teilen dieselbe unverzerrte 560x360-Fläche');
 for (const id of ['inside_main', 'outside_left', 'outside_right', 'outside_rear', 'outside_front_white', 'outside_front_amber']) {
   check(dashboard.includes(id), `V2-Lichtmodell nutzt reale Licht-ID ${id}`);
 }
@@ -303,6 +334,21 @@ check(dashboardV2Markup.includes("@click=\"v2ToggleZone('highbeam')\"") && dashb
 check(dashboardV2Markup.includes('class="cc2-dimmer-range"') && dashboardV2Markup.includes('@change="v2Dim"'), 'V2 besitzt den permanenten Dimmer für die ausgewählte Zone');
 check(dashboard.includes("this.lightDim(this.v2SelectedLight,event)"), 'V2-Dimmer verwendet den vorhandenen STAR-Power-Dimmbefehl');
 for (const scene of ['camping', 'night', 'all_off']) check(dashboardV2Markup.includes(`v2Scene('${scene}')`), `V2-Lichtseite bietet reale Szene ${scene}`);
+check(dashboardV2Markup.includes('@click="v2OpenLightSceneEditor(\'camping\')"')
+  && dashboardV2Markup.includes('Lichtszenen Camping, Nacht und Alles aus anpassen')
+  && dashboardV2Markup.includes('v2LightSceneEdit'), 'Die Lichtseite öffnet den Camping-/Nacht-Editor direkt über „Anpassen“');
+check(dashboardV2Markup.includes('Wie zuvor')
+  && dashboardV2Markup.includes("v2SetSceneLightMode(light,'off')")
+  && dashboardV2Markup.includes("v2SetSceneLightMode(light,'on')")
+  && dashboardV2Markup.includes('v2SetSceneLightDim(light,$event)'), 'Lichtprofile unterstützen unverändert, aus, ein und Dimmen');
+check(dashboard.includes("settingsPatch({lightingScenes:{[this.v2LightSceneId]:values}})")
+  && !dashboard.includes("command('lightingScenes'"), 'Szenen-Anpassen speichert ausschließlich über den Settings-Pfad und schaltet beim Bearbeiten keine Hardware');
+check(settingsFunction.includes('const sanitizeLightingScene = sceneId =>')
+  && settingsFunction.includes("camping: sanitizeLightingScene('camping')")
+  && settingsFunction.includes("night: sanitizeLightingScene('night')")
+  && settingsFunction.includes("all_off: sanitizeLightingScene('all_off')"), 'Cerbo validiert und besitzt ausschließlich die drei editierbaren Lichtprofile');
+check(snapshotFunction.includes("lightScenes: ['camping', 'night', 'all_off'].map")
+  && snapshotFunction.includes('cfg.lightingScenes && cfg.lightingScenes[sceneId]'), 'Snapshot verteilt die Cerbo-eigenen Lichtprofile an alle Oberflächen');
 
 check(dashboardV2Markup.includes("v2EnergyPane='power'") && dashboardV2Markup.includes("v2EnergyPane='sources'"), 'V2-Energie behält 12/230 V und Quellen als zwei Ansichten');
 check(dashboard.includes('v2PowerChannels(){return this.powerChannels.slice(0,5)}'), 'V2-Energie begrenzt die sichtbare DC-Verteilung auf fünf reale Verbraucher');
@@ -316,6 +362,46 @@ check(dashboardV2Markup.includes('@click="indevoltToggle"') && dashboard.include
 check(dashboardV2Markup.includes(':disabled="!s.energy?.indevolt?.online"') && !dashboardV2Markup.includes(':disabled="!s.energy?.indevolt?.gridConnection?.available"'), 'INDEVOLT bleibt bei online sichtbarer Karte aktiv, auch wenn nur der Netzanschluss fehlt');
 check(dashboardV2Markup.includes('data-energy-pane="solar-detail"') && dashboardV2Markup.includes('v-for="c in s.energy?.solar?.chargers||[]"'), 'Solar-Gesamtdetail rendert die echten Victron-Laderegler');
 check(dashboardV2Markup.includes('s.energy?.indevolt?.solarPower') && dashboardV2Markup.includes('s.energy?.indevolt?.batteryPower'), 'Solar-Gesamtdetail enthält echte INDEVOLT-Werte');
+check(snapshotFunction.includes('totalSolarPower: victronSolar == null ? null : Number(victronSolar)'), 'Solar gesamt verwendet ausschließlich den Victron-SystemCalc-MPPT-Aggregatwert');
+check(!snapshotFunction.includes('Number(victronSolar || 0) + Number(indevoltSolar || 0)'), 'INDEVOLT-Solar wird nicht mehr in Solar gesamt eingerechnet');
+const batteryPowerInput = get('ec2c675c3d08f88c');
+check(batteryPowerInput.type === 'victron-input-battery'
+  && batteryPowerInput.service === 'com.victronenergy.battery/277'
+  && batteryPowerInput.path === '/Dc/0/Power', 'SmartShunt-Batterieleistung bleibt für Detaildaten unverändert erhalten');
+check(batteryPowerInput.onlyChanges === false
+  && targetsOf(batteryPowerInput.id).includes('357fe2bdfa339671')
+  && get('357fe2bdfa339671').rules?.some(rule => rule.p === 'topic' && rule.to === 'battery.power'), 'Bestehender Batteriepfad behält Polling und Zieltopic bei');
+const dcSystemPowerInput = get('6b67bafd0f8833d1');
+check(dcSystemPowerInput.type === 'victron-input-system'
+  && dcSystemPowerInput.service === 'com.victronenergy.system'
+  && dcSystemPowerInput.path === '/Dc/System/Power'
+  && dcSystemPowerInput.serviceObj?.service === 'com.victronenergy.system'
+  && dcSystemPowerInput.pathObj?.path === '/Dc/System/Power', 'DC-Verbrauch nutzt exakt Global.system.dc.power aus der originalen gui-v2');
+check(targetsOf(dcSystemPowerInput.id).includes('d097a007d7fe4bbb')
+  && get('d097a007d7fe4bbb').rules?.some(rule => rule.p === 'topic' && rule.to === 'dc.system.power')
+  && snapshotFunction.includes("const dcSystemPower = sensor('dc.system.power');")
+  && snapshotFunction.includes('        dcSystemPower,'), 'DC-SystemCalc-Wert wird additiv in den zentralen Snapshot übernommen');
+check(nodesAt('com.victronenergy.tank/1', '/Remaining').length === 0, 'Nicht vorhandener Abwassertank wird nicht länger abgefragt');
+check(dashboardV2Markup.includes('{{signed(s.energy?.dcSystemPower)}} W') && dashboardV2Markup.includes('DC-Verbrauch'), 'Home zeigt den originalen DC-Systemwert statt Batterieladeleistung');
+check(!dashboardV2Markup.includes('{{signed(s.energy?.battery?.power)}} W'), 'Home verwechselt SmartShunt-Ladeleistung nicht mehr mit DC-Verbrauch');
+check(dashboard.includes("v2BatteryFlow(){")
+  && dashboard.includes("power>5")
+  && dashboard.includes("power < -5")
+  && dashboard.includes("mode:'charging'")
+  && dashboard.includes("mode:'discharging'")
+  && dashboard.includes("mode:'idle'"), 'Home leitet Laden, Entladen und Ruhe mit 5-W-Deadband aus dem unveränderten SmartShunt-Wert ab');
+check(dashboardV2Markup.includes("'cc2-battery-flow','is-'+v2BatteryFlow.mode")
+  && dashboardV2Markup.includes('{{v2BatteryFlow.label}}')
+  && dashboardV2Markup.includes('{{v2BatteryFlow.value}}'), 'SOC-Bereich zeigt Richtung und Betrag der Batterieleistung kompakt an');
+check(dashboardV2Css.includes('.cc2-battery-flow.is-charging')
+  && dashboardV2Css.includes('.cc2-battery-flow.is-discharging')
+  && dashboardV2Css.includes('width: 108px;'), 'Batterierichtung besitzt feste kollisionsfreie Geometrie und getrennte Lade-/Entladefarben');
+check(dashboard.includes('v2BatteryRuntime(){')
+  && dashboard.includes("seconds>=86400")
+  && dashboard.includes("power>5)return{value:'Lädt'")
+  && dashboardV2Markup.includes('class="cc2-battery-runtime"')
+  && dashboardV2Markup.includes('{{v2BatteryRuntime.value}}'), 'Home zeigt reale SmartShunt-Restlaufzeit als Tage/Stunden oder beim Laden als „Lädt“');
+check(!dashboardV2Markup.includes('duration(s.energy?.battery?.timeToGoSeconds)'), 'Restlaufzeit ist eine klar beschriftete Anzeige und kein unlesbarer Zusatz in der Spannungszeile');
 check(dashboard.includes("v2PageLabel(){return({home:'Home',lights:'Licht',climate:'Klima',energy:'Energie'"), 'Solar-Detail behält Energie als Seitenkopf');
 check(dashboardV2Markup.includes('{{v2ChargerName(c)}}') && dashboard.includes("if(instance===278)return'MPPT 100/30 · 1'") && dashboard.includes("if(instance===279)return'MPPT 100/30 · 2'") && dashboard.includes("if(instance===290)return'MPPT 150/45'"), 'Solar-Detail verwendet die kurzen MPPT-Titel der Designquelle');
 
@@ -323,7 +409,13 @@ check(dashboardV2Markup.includes('<strong>Klimaautomatik</strong>') && dashboard
 check(dashboardV2Markup.includes('{{v2QuickName(q)}}') && dashboard.includes("'light:outside_front_white':'Tagfahrlicht'") && dashboard.includes("'light:outside_front_amber':'Warnlicht'"), 'Favoriten kürzen Tagfahrlicht und Warnlicht konsistent');
 check(dashboardV2Markup.includes('v-for="minutes in [0,30,60,120]"') && dashboardV2Markup.includes('v2RuntimeOpen'), 'Autoterm-Zeitlimit bleibt optional');
 check(dashboardV2Markup.includes("v2RuntimeOpen?'Zeitlimit':'Zeitlimit hinzufügen'") && dashboardV2Markup.includes(":class=\"v2RuntimeOpen?'':'cc2-sr-only'\""), 'Autoterm zeigt das Zeitlimit erst nach ausdrücklicher Auswahl');
-check(!dashboardV2Markup.includes("v-for=\"m in ['auto','heat','cool']\""), 'Komfort enthält nur Sollwert und zentralen Auto-Schalter');
+check((dashboardV2Markup.match(/v-for="mode in \['off','manual','auto'\]"/g) || []).length === 2
+  && dashboardV2Markup.includes("mode==='off'?'Aus':mode==='manual'?'Manuell':'Auto'"), 'Home und Klimaseite bieten die drei klaren Betriebsarten Aus, Manuell und Auto');
+const climateControlMethod = dashboard.match(/climateControlMode\(mode\)\{([^}]|\}(?!,climateTarget))*\}/)?.[0] || '';
+check(climateControlMethod.includes("settingsPatch({climateAutomation:patch})") === false
+  && climateControlMethod.includes('this.climatePatch({controlMode:mode})')
+  && !climateControlMethod.includes("this.command('heater'")
+  && !climateControlMethod.includes("this.command('maxxfan'"), 'Betriebsartschalter speichert nur einen Cerbo-Intent und schaltet keine Geräte direkt im Browser');
 check(dashboardV2Markup.includes('@click="heaterToggle"') && dashboardV2Markup.includes('@change="fanSpeed"'), 'Klima verwendet echte Autoterm- und MaxxFan-Befehle');
 check(dashboardV2Markup.includes('s.climate?.temperatureSensors?.comfort') === false && dashboard.includes('v2Humidity(){let value=this.s.climate?.temperatureSensors?.comfort?.humidity'), 'Home-Luftfeuchte stammt aus dem realen Komfortsensor');
 
@@ -335,8 +427,13 @@ for (const frozen of ['35 W', '42,97', '42.97', '31 %', '29,7', '29.7', '7 / 10'
 for (const redundant of ['Raumklima', 'Dieselheizung', 'Dachlüfter', 'Transit Lichtzonen']) check(!dashboardV2Markup.includes(redundant), `V2 vermeidet redundante Beschriftung ${redundant}`);
 check(!dashboardV2Markup.includes('setDesignVersion') && !dashboardV2Markup.includes('Design V1'), 'V2-Systemseite enthält keinen alten Designumschalter');
 check(dashboardV2Markup.includes('@click="openVictron"') && dashboard.includes("window.location.hostname"), 'V2-Systemseite öffnet die originale Victron-Ansicht ohne erfundene API');
-check(dashboardV2Css.includes('grid-template-columns: repeat(6, 1fr)') && dashboardV2Css.includes('aspect-ratio: 5 / 3'), 'V2-CSS behält Touch-50-Seitenverhältnis und Sechsfachnavigation');
-check(dashboardV2Css.includes('.cc2-zone-card.is-on') && dashboardV2Css.includes('.cc2-photo-light.is-on::before'), 'V2-CSS zeigt Lichtstatus direkt an Karte und Fahrzeugfoto');
+check(dashboardV2Css.includes('grid-template-columns: repeat(6, 1fr)')
+  && dashboardV2Css.includes('.cc2-device {')
+  && dashboardV2Css.includes('width: 100%;')
+  && dashboardV2Css.includes('height: 100%;')
+  && dashboardV2Css.includes('aspect-ratio: auto;')
+  && !dashboardV2Css.includes('width: min(100%, 800px)'), 'V2 nutzt den gesamten Browser-Viewport und behält die Sechsfachnavigation');
+check(dashboardV2Css.includes('.cc2-zone-card.is-on') && dashboardV2Css.includes('.cc2-vehicle-lamp.is-on'), 'V2-CSS zeigt Lichtstatus direkt an Karte und exakt positioniertem SVG-Lichtkörper');
 const settingsDashboard = get('aec5cc044fa2963f').format || '';
 check(!settingsDashboard.includes('class="design-picker"'), 'Separate Einstellungsseite enthält keinen V1/V2-Umschalter');
 check(!settingsDashboard.includes('designVersion'), 'Separate Einstellungsseite erzeugt keine V1-Payload');
@@ -360,6 +457,10 @@ check(migratedConfig.ui?.designVersion === undefined, 'Bestehende Designauswahl 
 check(JSON.stringify(migratedConfig.ui?.quickAccessIds) === JSON.stringify([
   'light:inside_main', 'light:outside_front_amber', 'light:outside_right', 'switch:high_beam_manual'
 ]), 'Bestehende vier Lichtbelegungen bleiben bei der Migration erhalten');
+check(JSON.stringify(migratedConfig.ui?.favoriteIds) === JSON.stringify([
+  'switch:water_pump', 'device:inverter', 'device:heater', 'device:maxxfan'
+]), 'Fehlende Favoriten erhalten den eigenen sicheren Standard statt einer Schnellzugriff-Kopie');
+check(JSON.stringify(migratedConfig.ui?.favoriteIds) !== JSON.stringify(migratedConfig.ui?.quickAccessIds), 'Migration hält Favoriten und Home-Schnellzugriff sichtbar getrennt');
 
 const designFile = new Map([['camperConfig', migratedConfig]]);
 const designFlow = {
@@ -370,6 +471,67 @@ const designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'pat
 check(designOutput?.[0]?.payload?.config?.ui?.designVersion === undefined, 'Settings-Patch kann V1 nicht wieder aktivieren');
 check(designFile.get('camperConfig')?.ui?.designVersion === undefined, 'V1-Auswahl wird nicht persistent gespeichert');
 
+const favoritePatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { favoriteIds: ['device:heater', 'device:heater', 'invalid', 'switch:water_pump', 'device:maxxfan', 'device:inverter'] } } } }, designFlow, {}, {}, {}, {});
+const favoritePatchedConfig = favoritePatchOutput?.[0]?.payload?.config || {};
+check(JSON.stringify(favoritePatchedConfig.ui?.favoriteIds) === JSON.stringify(['device:heater', 'switch:water_pump', 'device:maxxfan', 'device:inverter']), 'Favoriten-Patch wird erlaubt, dedupliziert, gegen den Katalog gefiltert und auf vier begrenzt');
+check(JSON.stringify(favoritePatchedConfig.ui?.quickAccessIds) === JSON.stringify(migratedConfig.ui?.quickAccessIds), 'Favoriten-Patch verändert den Home-Schnellzugriff nicht');
+
+const climatePatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { climateAutomation: { controlMode: 'off' } } } }, designFlow, {}, {}, {}, {});
+const climatePatchedConfig = climatePatchOutput?.[0]?.payload?.config || {};
+check(climatePatchedConfig.climateAutomation?.controlMode === 'off'
+  && climatePatchedConfig.climateAutomation?.enabled === false, 'Klima-Aus wird als eigene persistente Betriebsart gespeichert');
+check(settingsDashboard.includes('v-model="cfg.climateAutomation.controlMode"')
+  && settingsDashboard.includes('<option value="off">Aus</option>')
+  && settingsDashboard.includes('<option value="manual">Manuell</option>')
+  && settingsDashboard.includes('<option value="auto">Automatik</option>')
+  && !settingsDashboard.includes('Klimaautomatik aktiv'), 'Einstellungen verwenden denselben dreistufigen Klimavertrag statt eines widersprüchlichen Kontrollkästchens');
+
+const climateControllerFunction = get('ec5c5c0618d69359').func || '';
+check(climateControllerFunction.includes("const controlMode = ['off', 'manual', 'auto']")
+  && climateControllerFunction.includes("const forceOff = controlMode === 'off'")
+  && snapshotFunction.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)"), 'Controller und Snapshot führen die drei Klima-Betriebsarten explizit');
+const runClimateController = ({ controlMode, heaterOwned = false, fanOwned = false, heaterRunning = false, fanRunning = false, temperature = 22 }) => {
+  const values = new Map([
+    ['camperConfig', { climateAutomation: { controlMode, enabled: controlMode === 'auto', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 } }],
+    ['state', { running: heaterRunning, cooling: false }],
+    ['cfg', { setpoint: 22 }],
+    ['camperAdapters', { 'maxxfan.state': { on: fanRunning, speed: 50 } }],
+    ['climateAutomationState', { demand: 'idle', heaterOwned, fanOwned, roomTemperature: temperature, ceilingTemperature: temperature, sensorOnline: true, enabled: false, controlMode: 'manual' }]
+  ]);
+  const flowApi = { get: key => values.get(key), set: (key, value) => values.set(key, value) };
+  const output = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', climateControllerFunction)({}, flowApi, {}, {}, {}, {});
+  return { output, state: values.get('climateAutomationState') };
+};
+const manualClimate = runClimateController({ controlMode: 'manual', heaterRunning: true, fanRunning: true });
+check(manualClimate.output?.[0] == null && manualClimate.output?.[1] == null
+  && manualClimate.state?.controlMode === 'manual', 'Manuell lässt nicht von der Automatik gestartete AUTOTERM-/MaxxFan-Geräte unangetastet');
+const releasedClimate = runClimateController({ controlMode: 'manual', heaterOwned: true, fanOwned: true, heaterRunning: true, fanRunning: true });
+check(releasedClimate.output?.[0]?.[0]?.payload?.action === 'stop'
+  && releasedClimate.output?.[1]?.[0]?.payload?.value === false, 'Manuell beendet nur Geräte, die zuvor der Klimaautomatik gehörten');
+const offClimate = runClimateController({ controlMode: 'off', heaterRunning: true, fanRunning: true });
+check(offClimate.output?.[0]?.[0]?.payload?.action === 'stop'
+  && offClimate.output?.[1]?.[0]?.payload?.value === false
+  && offClimate.state?.controlMode === 'off', 'Aus stoppt AUTOTERM und MaxxFan zentral auf dem Cerbo');
+const autoClimate = runClimateController({ controlMode: 'auto', temperature: 19 });
+check(autoClimate.output?.[0]?.some(message => message.payload?.action === 'start')
+  && autoClimate.state?.demand === 'heat', 'Auto nutzt weiterhin die bestehende temperaturgeführte Cerbo-Regelung');
+
+const lightingPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { lightingScenes: {
+  camping: { inside_main: 42.4, outside_front_amber: 37, outside_left: -9, unknown_light: 80 },
+  night: { inside_main: 999, outside_right: null },
+  all_off: { inside_main: 0, outside_front_white: 0, ignored: 0 }
+} } } }, designFlow, {}, {}, {}, {});
+const lightingPatchedConfig = lightingPatchOutput?.[0]?.payload?.config || {};
+check(JSON.stringify(lightingPatchedConfig.lightingScenes?.camping) === JSON.stringify({ inside_main: 42, outside_front_amber: 100, outside_left: 0 }), 'Campingprofil rundet und begrenzt dimmbare Werte, normalisiert nicht dimmbares Warnlicht und verwirft unbekannte IDs');
+check(lightingPatchedConfig.lightingScenes?.night?.inside_main === 100
+  && lightingPatchedConfig.lightingScenes?.night?.outside_right === 0
+  && lightingPatchedConfig.lightingScenes?.night?.unknown_light === undefined, 'Nachtprofil begrenzt Helligkeit und enthält ausschließlich reale Lichtkreise');
+check(Object.keys(lightingPatchedConfig.lightingScenes?.all_off || {}).length === 6
+  && Object.values(lightingPatchedConfig.lightingScenes?.all_off || {}).every(value => value === 0)
+  && lightingPatchedConfig.lightingScenes?.all_off?.ignored === undefined, 'Alles-aus-Profil enthält alle sechs realen Lichtkreise als AUS und verwirft unbekannte IDs');
+check(JSON.stringify(lightingPatchedConfig.ui?.quickAccessIds) === JSON.stringify(favoritePatchedConfig.ui?.quickAccessIds)
+  && JSON.stringify(lightingPatchedConfig.ui?.favoriteIds) === JSON.stringify(favoritePatchedConfig.ui?.favoriteIds), 'Lichtszenen-Patch verändert weder Schnellzugriff noch Favoriten');
+
 const commandStore = new Map([['camperConfig', migratedConfig], ['camperCommands', []], ['camperWsClients', {}]]);
 const commandFlow = {
   get: key => commandStore.get(key),
@@ -377,9 +539,15 @@ const commandFlow = {
 };
 const runCommandRouter = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('6265bf6f9bade1e5').func || '');
 const settingsCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { ui: { quickAccessIds: ['switch:water_pump'] } } } }, commandFlow, {}, {}, {}, {});
-check(settingsCommandOutput?.[4]?.topic === 'ws.settings' && settingsCommandOutput?.[4]?.payload?.patch?.ui?.quickAccessIds?.[0] === 'switch:water_pump', 'Favoritenauswahl nutzt den vorhandenen Settings-Router');
-check([0, 1, 2, 3, 9, 11].every(index => settingsCommandOutput?.[index] == null), 'Favoritenauswahl erzeugt keinen Hardwarebefehl');
-
+check(settingsCommandOutput?.[4]?.topic === 'ws.settings' && settingsCommandOutput?.[4]?.payload?.patch?.ui?.quickAccessIds?.[0] === 'switch:water_pump', 'Schnellzugriff nutzt weiterhin den vorhandenen Settings-Router');
+check([0, 1, 2, 3, 9, 11].every(index => settingsCommandOutput?.[index] == null), 'Schnellzugriffsauswahl erzeugt keinen Hardwarebefehl');
+const favoritesCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { ui: { favoriteIds: ['device:heater'] } } } }, commandFlow, {}, {}, {}, {});
+check(favoritesCommandOutput?.[4]?.topic === 'ws.settings' && favoritesCommandOutput?.[4]?.payload?.patch?.ui?.favoriteIds?.[0] === 'device:heater', 'Favoritenauswahl nutzt den bestehenden Settings-Patch mit eigenem Feld');
+check([0, 1, 2, 3, 9, 11].every(index => favoritesCommandOutput?.[index] == null), 'Favoritenauswahl erzeugt keinerlei Hardwareausgabe');
+const lightingCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { lightingScenes: { camping: { inside_main: 55 } } } } }, commandFlow, {}, {}, {}, {});
+check(lightingCommandOutput?.[4]?.topic === 'ws.settings'
+  && lightingCommandOutput?.[4]?.payload?.patch?.lightingScenes?.camping?.inside_main === 55, 'Lichtszenen-Editor nutzt den vorhandenen Settings-Router');
+check([0, 1, 2, 3, 9, 11].every(index => lightingCommandOutput?.[index] == null), 'Speichern eines Lichtprofils erzeugt keinerlei Hardwareausgabe');
 const runProtectedCommand = (payload, config = migratedConfig) => {
   const values = new Map([['camperConfig', JSON.parse(JSON.stringify(config))], ['camperCommands', []], ['camperWsClients', {}]]);
   const writes = [];
@@ -392,6 +560,16 @@ const runProtectedCommand = (payload, config = migratedConfig) => {
   );
   return { output, values, writes };
 };
+const configuredSceneConfig = JSON.parse(JSON.stringify(lightingPatchedConfig));
+configuredSceneConfig.lightingScenes.camping = { inside_main: 42, outside_front_amber: 100 };
+const configuredCamping = runProtectedCommand({ origin: 'gx', target: 'scene', action: 'run', sceneId: 'camping' }, configuredSceneConfig);
+const configuredCampingStarPower = configuredCamping.output?.[0] || [];
+check(configuredCamping.output?.[5]?.statusCode === 202
+  && configuredCampingStarPower.some(item => item.payload?.channel === 9 && item.payload?.action === 'dim' && item.payload?.value === 42)
+  && configuredCampingStarPower.some(item => item.payload?.channel === 8 && item.payload?.action === 'toggle' && item.payload?.value === 1), 'Camping startet exakt das gespeicherte Innenlicht- und Warnlichtprofil');
+check(!configuredCampingStarPower.some(item => [7, 10, 11, 12].includes(Number(item.payload?.channel))), '„Wie zuvor“ erzeugt für ausgelassene Lichtkreise keinen Schaltbefehl');
+check(configuredCampingStarPower.some(item => item.payload?.channel === configuredSceneConfig.mappings.waterPumpChannel && item.payload?.value === 1)
+  && configuredCamping.output?.[3]?.some(item => item.payload?.action === 'speed'), 'Camping behält vorhandene Nicht-Licht-Aktionen wie Wasserpumpe und MaxxFan bei');
 const vrmStarlinkOff = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value: false });
 check(vrmStarlinkOff.output?.[5]?.statusCode === 400 && vrmStarlinkOff.output?.[5]?.payload?.error === 'remote_link_protection', 'VRM-Starlink-AUS wird mit remote_link_protection abgelehnt');
 check([0, 1, 2, 3, 9, 11].every(index => vrmStarlinkOff.output?.[index] == null), 'VRM-Starlink-AUS erreicht keinen Hardwareausgang');
@@ -612,8 +790,8 @@ check(stateAggregator.includes("'FREIGEGEBEN · WARTET'"), 'Orion Mode 1 mit Sta
 check(!stateAggregator.includes("const orionStateNames = { 0: 'AUS'"), 'Orion State 0 wird nicht mehr eigenständig als AUS interpretiert');
 check(stateAggregator.includes('stateText: orionStateText'), 'Snapshot verwendet die modebewusste Orion-Zustandsanzeige');
 
-const runStateAggregator = sensors => {
-  const values = new Map([['camperSensors', sensors]]);
+const runStateAggregator = (sensors, extraValues = {}) => {
+  const values = new Map([['camperSensors', sensors], ...Object.entries(extraValues)]);
   const globalValues = new Map();
   const flowApi = {
     get: key => values.get(key),
@@ -628,6 +806,19 @@ const runStateAggregator = sensors => {
   );
   return result?.[0]?.payload;
 };
+
+const energyFixtureNow = Date.now();
+const separatedEnergyFixture = runStateAggregator({
+  'battery.power': { value: -52, seen: energyFixtureNow },
+  'solar.total.power': { value: 318, seen: energyFixtureNow },
+  'dc.system.power': { value: 184, seen: energyFixtureNow }
+}, {
+  indevoltState: { online: true, lastSeen: energyFixtureNow, solarPower: 777 }
+})?.energy;
+check(separatedEnergyFixture?.battery?.power === -52
+  && separatedEnergyFixture?.dcSystemPower === 184, 'Fixture hält SmartShunt-Leistung und Victron-DC-Gesamtverbrauch getrennt');
+check(separatedEnergyFixture?.totalSolarPower === 318
+  && separatedEnergyFixture?.indevolt?.solarPower === 777, 'Fixture schließt INDEVOLT aus Solar gesamt aus und veröffentlicht es weiterhin separat');
 
 // Dynamische Persistenzregression: Auch ein massiver identischer Burst darf
 // den großen Snapshot und die gebundenen UI-Ausgänge nur einmal markieren.

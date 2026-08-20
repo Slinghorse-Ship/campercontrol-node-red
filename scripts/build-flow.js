@@ -977,12 +977,66 @@ if (!settings.func.includes('externalWifiTileEnabled')) {
   );
 }
 const state = get('ada9353cc6ea4a4c');
+const climateAutomationController = get('ec5c5c0618d69359');
 if (!state.func.includes('externalWifiTileEnabled')) {
   state.func = replaceOnce(
     state.func,
     "    ui: { quickAccessLightIds: cfg.ui && Array.isArray(cfg.ui.quickAccessLightIds) ? cfg.ui.quickAccessLightIds : ['outside_front_white','outside_front_amber','inside_main','outside_right'] },",
     "    ui: { quickAccessLightIds: cfg.ui && Array.isArray(cfg.ui.quickAccessLightIds) ? cfg.ui.quickAccessLightIds : ['outside_front_white','outside_front_amber','inside_main','outside_right'], externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
     'WLAN-Kachel im Snapshot'
+  );
+}
+if (state.func.includes('Number(victronSolar || 0) + Number(indevoltSolar || 0)')) {
+  state.func = replaceOnce(
+    state.func,
+    'totalSolarPower: (victronSolar == null && indevoltSolar == null) ? null : Number(victronSolar || 0) + Number(indevoltSolar || 0)',
+    'totalSolarPower: victronSolar == null ? null : Number(victronSolar)',
+    'Solar gesamt ausschließlich aus Victron /Dc/Pv/Power'
+  );
+}
+
+// Batterie-Details behalten bewusst den direkten SmartShunt-Messwert. Die
+// originale gui-v2-Kachel "DC Loads" liest davon getrennt
+// com.victronenergy.system /Dc/System/Power (Global.system.dc.power). Fuer
+// denselben Wert wird das nicht vorhandene Abwasser-/Remaining-Eingangspaar
+// count-neutral wiederverwendet; dieses Fahrzeug besitzt keinen Abwassertank.
+const batteryPowerInput = get('ec2c675c3d08f88c');
+Object.assign(batteryPowerInput, {
+  type: 'victron-input-battery',
+  service: 'com.victronenergy.battery/277',
+  path: '/Dc/0/Power',
+  serviceObj: { service: 'com.victronenergy.battery/277', name: 'SmartShunt 500A/50mV' },
+  pathObj: { path: '/Dc/0/Power', type: 'number', name: '/Dc/0/Power' },
+  name: 'SmartShunt Leistung'
+});
+const dcSystemPowerInput = get('6b67bafd0f8833d1');
+Object.assign(dcSystemPowerInput, {
+  type: 'victron-input-system',
+  service: 'com.victronenergy.system',
+  path: '/Dc/System/Power',
+  serviceObj: { service: 'com.victronenergy.system', name: 'Venus system' },
+  pathObj: { path: '/Dc/System/Power', type: 'number', name: '/Dc/System/Power' },
+  name: 'Victron DC-Verbrauch gesamt'
+});
+const dcSystemPowerTopic = get('d097a007d7fe4bbb');
+dcSystemPowerTopic.name = '→ dc.system.power';
+const dcSystemTopicRule = dcSystemPowerTopic.rules.find(rule => rule.t === 'set' && rule.p === 'topic');
+if (!dcSystemTopicRule) throw new Error('Topic-Regel fuer DC-Systemleistung fehlt');
+dcSystemTopicRule.to = 'dc.system.power';
+if (!state.func.includes("const dcSystemPower = sensor('dc.system.power');")) {
+  state.func = replaceOnce(
+    state.func,
+    "const victronSolar = sensor('solar.total.power');",
+    "const victronSolar = sensor('solar.total.power');\nconst dcSystemPower = sensor('dc.system.power');",
+    'DC-Systemleistung aus originalem gui-v2-Pfad'
+  );
+}
+if (!state.func.includes('        dcSystemPower,')) {
+  state.func = replaceOnce(
+    state.func,
+    "    energy: {\n        name: cardName('energy'),\n        battery:",
+    "    energy: {\n        name: cardName('energy'),\n        dcSystemPower,\n        battery:",
+    'DC-Systemleistung im zentralen Snapshot'
   );
 }
 
@@ -1087,20 +1141,50 @@ const cleanEmbeddedDefaults = source => source.replace(
   (match, prefix, json, suffix) => {
     const value = JSON.parse(json);
     const genericQuickFallback = ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main'];
+    const genericFavoriteFallback = ['switch:water_pump', 'device:inverter', 'device:heater', 'device:maxxfan'];
     const genericQuick = value.ui && Array.isArray(value.ui.quickAccessIds) ? value.ui.quickAccessIds : null;
+    const genericFavorites = value.ui && Array.isArray(value.ui.favoriteIds) ? value.ui.favoriteIds : null;
     const legacyQuick = value.ui && Array.isArray(value.ui.quickAccessLightIds)
       ? value.ui.quickAccessLightIds.map(id => id === 'high_beam' ? 'switch:high_beam_manual' : 'light:' + id)
       : null;
     value.version = 5;
     value.ui = {
       quickAccessIds: genericQuick || legacyQuick || genericQuickFallback,
+      favoriteIds: genericFavorites || genericFavoriteFallback,
       externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false)
     };
+    value.lightingScenes = Object.assign({
+      camping: { inside_main: 70 },
+      night: {
+        inside_main: 15,
+        outside_front_white: 0,
+        outside_front_amber: 0,
+        outside_right: 0,
+        outside_rear: 0,
+        outside_left: 0
+      },
+      all_off: {
+        inside_main: 0,
+        outside_front_white: 0,
+        outside_front_amber: 0,
+        outside_right: 0,
+        outside_rear: 0,
+        outside_left: 0
+      }
+    }, value.lightingScenes || {});
     delete value.security;
     value.access = { scope: 'local-network', unrestricted: true };
     value.temperatureSensors = Object.assign({}, value.temperatureSensors || {}, {
       ceilingService: 'com.victronenergy.temperature/24',
       floorService: ''
+    });
+    const legacyClimateAutomation = value.climateAutomation || {};
+    const climateControlMode = ['off', 'manual', 'auto'].includes(legacyClimateAutomation.controlMode)
+      ? legacyClimateAutomation.controlMode
+      : (legacyClimateAutomation.enabled === true ? 'auto' : 'manual');
+    value.climateAutomation = Object.assign({}, legacyClimateAutomation, {
+      controlMode: climateControlMode,
+      enabled: climateControlMode === 'auto'
     });
     value.ventilation = Object.assign({}, value.ventilation || {}, {
       enabled: true,
@@ -1228,6 +1312,165 @@ if (!settings.func.includes("const quickFallback = ['switch:water_pump'")) {
     for (const id of quickFallback) if (quickAccessIds.length < 4 && quickAllowed.has(id) && !quickSeen.has(id)) { quickSeen.add(id); quickAccessIds.push(id); }
     cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };`,
     'Generische Schnellzugriff-Konfiguration'
+  );
+}
+
+if (!settings.func.includes("const favoriteFallback = ['switch:water_pump'")) {
+  settings.func = replaceOnce(
+    settings.func,
+    `    const quickSeen = new Set();
+    const quickSource = cfg.ui && Array.isArray(cfg.ui.quickAccessIds) ? cfg.ui.quickAccessIds : quickFallback;
+    const quickAccessIds = quickSource.map(value => String(value)).filter(id => quickAllowed.has(id) && !quickSeen.has(id) && quickSeen.add(id)).slice(0, 4);
+    for (const id of quickFallback) if (quickAccessIds.length < 4 && quickAllowed.has(id) && !quickSeen.has(id)) { quickSeen.add(id); quickAccessIds.push(id); }
+    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };`,
+    `    const quickSeen = new Set();
+    const quickSource = cfg.ui && Array.isArray(cfg.ui.quickAccessIds) ? cfg.ui.quickAccessIds : quickFallback;
+    const quickAccessIds = quickSource.map(value => String(value)).filter(id => quickAllowed.has(id) && !quickSeen.has(id) && quickSeen.add(id)).slice(0, 4);
+    for (const id of quickFallback) if (quickAccessIds.length < 4 && quickAllowed.has(id) && !quickSeen.has(id)) { quickSeen.add(id); quickAccessIds.push(id); }
+    const favoriteFallback = ['switch:water_pump', 'device:inverter', 'device:heater', 'device:maxxfan'];
+    const favoriteConfigured = source.ui && Array.isArray(source.ui.favoriteIds);
+    const favoriteSource = favoriteConfigured ? cfg.ui.favoriteIds : favoriteFallback;
+    const favoriteSeen = new Set();
+    const favoriteIds = favoriteSource.map(value => String(value)).filter(id => quickAllowed.has(id) && !favoriteSeen.has(id) && favoriteSeen.add(id)).slice(0, 4);
+    cfg.ui = { quickAccessIds, favoriteIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };`,
+    'Eigenständige Favoriten-Konfiguration'
+  );
+}
+
+if (!settings.func.includes('const sanitizeLightingScene = sceneId =>')) {
+  settings.func = replaceOnce(
+    settings.func,
+    '    if (!cfg.scenes.length) cfg.scenes = clone(DEFAULTS.scenes);',
+    `    if (!cfg.scenes.length) cfg.scenes = clone(DEFAULTS.scenes);
+    // Camping und Nacht besitzen ein eigenes, benutzerfreundlich editierbares
+    // Lichtprofil. Fehlende Einträge bedeuten bewusst "unverändert". So
+    // bleiben bestehende Pumpen-/Lüfteraktionen der generischen Szene erhalten.
+    const configuredLightingScenes = object(cfg.lightingScenes) ? cfg.lightingScenes : {};
+    const defaultLightingScenes = object(DEFAULTS.lightingScenes) ? DEFAULTS.lightingScenes : {};
+    const lightById = new Map(cfg.lights.map(light => [light.id, light]));
+    const sanitizeLightingScene = sceneId => {
+        const sourceProfile = object(configuredLightingScenes[sceneId]) ? configuredLightingScenes[sceneId] : defaultLightingScenes[sceneId];
+        const profile = {};
+        if (!object(sourceProfile)) return profile;
+        for (const [lightId, rawValue] of Object.entries(sourceProfile).slice(0, 12)) {
+            const light = lightById.get(String(lightId));
+            const value = Number(rawValue);
+            if (!light || !Number.isFinite(value)) continue;
+            const bounded = Math.max(0, Math.min(100, Math.round(value)));
+            profile[light.id] = light.dimmable === false ? (bounded > 0 ? 100 : 0) : bounded;
+        }
+        return profile;
+    };
+    cfg.lightingScenes = {
+        camping: sanitizeLightingScene('camping'),
+        night: sanitizeLightingScene('night'),
+        all_off: sanitizeLightingScene('all_off')
+    };`,
+    'Validierte Lichtprofile für Camping und Nacht'
+  );
+}
+settings.func = settings.func.replace(
+  `    cfg.lightingScenes = {
+        camping: sanitizeLightingScene('camping'),
+        night: sanitizeLightingScene('night')
+    };`,
+  `    cfg.lightingScenes = {
+        camping: sanitizeLightingScene('camping'),
+        night: sanitizeLightingScene('night'),
+        all_off: sanitizeLightingScene('all_off')
+    };`
+);
+
+if (!settings.func.includes('const sourceClimateAutomation = object(source.climateAutomation)')) {
+  settings.func = replaceOnce(
+    settings.func,
+    `    cfg.climateAutomation = {
+        enabled: boolean(cfg.climateAutomation && cfg.climateAutomation.enabled, false),
+        mode: ['auto', 'heat', 'cool'].includes(cfg.climateAutomation && cfg.climateAutomation.mode) ? cfg.climateAutomation.mode : 'auto',
+        targetTemperature: number(cfg.climateAutomation && cfg.climateAutomation.targetTemperature, 22, 10, 30),
+        hysteresis: number(cfg.climateAutomation && cfg.climateAutomation.hysteresis, 1, 0.5, 5),
+        fanSpeed: Math.round(number(cfg.climateAutomation && cfg.climateAutomation.fanSpeed, 50, 10, 100))
+    };`,
+    `    const sourceClimateAutomation = object(source.climateAutomation) ? source.climateAutomation : {};
+    const climateControlMode = ['off', 'manual', 'auto'].includes(sourceClimateAutomation.controlMode)
+        ? sourceClimateAutomation.controlMode
+        : (sourceClimateAutomation.enabled === true ? 'auto' : 'manual');
+    cfg.climateAutomation = {
+        enabled: climateControlMode === 'auto',
+        controlMode: climateControlMode,
+        mode: ['auto', 'heat', 'cool'].includes(cfg.climateAutomation && cfg.climateAutomation.mode) ? cfg.climateAutomation.mode : 'auto',
+        targetTemperature: number(cfg.climateAutomation && cfg.climateAutomation.targetTemperature, 22, 10, 30),
+        hysteresis: number(cfg.climateAutomation && cfg.climateAutomation.hysteresis, 1, 0.5, 5),
+        fanSpeed: Math.round(number(cfg.climateAutomation && cfg.climateAutomation.fanSpeed, 50, 10, 100))
+    };`,
+    'Dreistufige Klima-Betriebsart mit Altbestand-Migration'
+  );
+}
+
+if (!climateAutomationController.func.includes("const controlMode = ['off', 'manual', 'auto']")) {
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    "const settings = Object.assign({ enabled: false, mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 }, cfg.climateAutomation || {});",
+    `const settings = Object.assign({ enabled: false, controlMode: 'manual', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 }, cfg.climateAutomation || {});
+const controlMode = ['off', 'manual', 'auto'].includes(settings.controlMode) ? settings.controlMode : (settings.enabled === true ? 'auto' : 'manual');
+const automationEnabled = controlMode === 'auto';`,
+    'Klima-Betriebsart im Controller'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    "const previousDemand = state.demand || 'idle';",
+    "const previousDemand = state.demand || 'idle';\nconst previousControlMode = ['off', 'manual', 'auto'].includes(state.controlMode) ? state.controlMode : (state.enabled === true ? 'auto' : 'manual');",
+    'Vorheriger Klima-Betriebsmodus'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    `if (settings.enabled !== true) {
+    demand = 'idle';
+    state.reason = 'Klimaautomatik aus';`,
+    `if (!automationEnabled) {
+    demand = 'idle';
+    state.reason = controlMode === 'off' ? 'Klima aus' : 'Manuelle Bedienung';`,
+    'Auto-Regelung nur in Betriebsart Auto'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    'const fanRunning = fan.on === true;',
+    "const fanRunning = fan.on === true;\nconst forceOff = controlMode === 'off';",
+    'Klima-Aus erzwingt Gerätestopp'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    `    if (state.heaterOwned && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });
+    if (state.fanOwned && fanRunning) fanMessages.push({ topic: 'ui', payload: { action: 'set', value: false, _climateAutomation: true } });`,
+    `    if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });
+    if ((state.fanOwned || forceOff) && fanRunning) fanMessages.push({ topic: 'ui', payload: { action: 'set', value: false, _climateAutomation: true } });`,
+    'Manuell gibt Automatikgeräte frei, Aus stoppt beide Geräte'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    'state.enabled = settings.enabled === true;',
+    "state.enabled = automationEnabled;\nstate.controlMode = controlMode;",
+    'Klima-Betriebsart im Controllerzustand'
+  );
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    'const changed = previousDemand !== demand;',
+    'const changed = previousDemand !== demand || previousControlMode !== controlMode;',
+    'Betriebsartwechsel aktualisiert Snapshot'
+  );
+}
+
+if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)")) {
+  state.func = replaceOnce(
+    state.func,
+    `        automation: {
+            enabled: climateAutomation.enabled === true,`,
+    `        automation: {
+            enabled: climateAutomation.enabled === true,
+            controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)
+                ? climateAutomation.controlMode
+                : (climateAutomation.enabled === true ? 'auto' : 'manual'),`,
+    'Klima-Betriebsart im Zustandssnapshot'
   );
 }
 
@@ -1368,6 +1611,27 @@ if (!commandRouter.func.includes('const validationError = validateItem(item);'))
     'Einzelaktionsvalidierung vor Hardware-Dispatch'
   );
 }
+if (!commandRouter.func.includes('const configuredLightProfile = cfg.lightingScenes')) {
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    `        const expanded = [];
+        for (const item of scene.actions || []) {`,
+    `        const expanded = [];
+        const configuredLightProfile = cfg.lightingScenes && cfg.lightingScenes[scene.id];
+        const sourceActions = configuredLightProfile && typeof configuredLightProfile === 'object' && !Array.isArray(configuredLightProfile)
+            ? (scene.actions || []).filter(item => item && item.target !== 'starpower').concat(Object.entries(configuredLightProfile).map(([lightId, rawValue]) => {
+                const light = (cfg.lights || []).find(candidate => candidate.id === lightId);
+                const value = Math.max(0, Math.min(100, Math.round(Number(rawValue))));
+                if (!light || !Number.isFinite(value)) return null;
+                return value === 0 || light.dimmable === false
+                    ? { target: 'starpower', action: 'set', channel: Number(light.channel), value: value > 0 ? 1 : 0 }
+                    : { target: 'starpower', action: 'dim', channel: Number(light.channel), value };
+            }).filter(Boolean))
+            : (scene.actions || []);
+        for (const item of sourceActions) {`,
+    'Camping-/Nacht-Lichtprofil vor atomarem Szenenlauf auflösen'
+  );
+}
 if (!commandRouter.func.includes('const commandsBefore = JSON.stringify(commands);')) {
   commandRouter.func = replaceOnce(
     commandRouter.func,
@@ -1439,6 +1703,26 @@ state.func = state.func.replace(
   "const orionMode = sensor('orion.mode');\nconst orionState = sensor('orion.state');\nconst orionSeen = Math.max(seen('orion.mode'), seen('orion.state'), seen('orion.power'), seen('orion.voltage'));\nconst orionOnline = orionSeen > now - staleMs;\nconst orionModeNumber = orionMode == null || orionMode === '' ? null : Number(orionMode);\nconst orionStateNumber = orionState == null || orionState === '' ? null : Number(orionState);",
   "const orionModeRecord = sensors['orion.mode'];\nconst orionModeSeen = seen('orion.mode');\nconst orionTelemetrySeen = Math.max(seen('orion.state'), seen('orion.power'), seen('orion.voltage'), seen('orion.current'), seen('orion.inputVoltage'), seen('orion.inputPower'), seen('orion.error'));\nconst orionSeen = Math.max(orionModeSeen, orionTelemetrySeen);\nconst orionOnline = orionSeen > now - staleMs;\nconst orionModeValue = orionModeRecord && [1, 4].includes(Number(orionModeRecord.value)) ? Number(orionModeRecord.value) : null;\nconst orionModeNumber = orionOnline ? orionModeValue : null;\nconst orionMode = orionModeNumber;\nconst orionState = sensor('orion.state');\nconst orionStateNumber = orionState == null || orionState === '' ? null : Number(orionState);"
 );
+state.func = state.func.replace(
+  `    lightScenes: ['camping', 'night'].map(sceneId => {
+        const scene = (cfg.scenes || []).find(item => item.id === sceneId);
+        return { id: sceneId, name: scene ? scene.name : (sceneId === 'camping' ? 'Camping' : 'Nacht'), values: Object.assign({}, cfg.lightingScenes && cfg.lightingScenes[sceneId] || {}) };
+    }),
+`,
+  ''
+);
+if (!state.func.includes('lightScenes: [\'camping\', \'night\', \'all_off\']')) {
+  state.func = replaceOnce(
+    state.func,
+    `    scenes: (cfg.scenes || []).filter(scene => scene.visible !== false).map(scene => ({ id: scene.id, name: scene.name, icon: scene.icon, actionCount: (scene.actions || []).length })),`,
+    `    scenes: (cfg.scenes || []).filter(scene => scene.visible !== false).map(scene => ({ id: scene.id, name: scene.name, icon: scene.icon, actionCount: (scene.actions || []).length })),
+    lightScenes: ['camping', 'night', 'all_off'].map(sceneId => {
+        const scene = (cfg.scenes || []).find(item => item.id === sceneId);
+        return { id: sceneId, name: scene ? scene.name : (sceneId === 'camping' ? 'Camping' : sceneId === 'night' ? 'Nacht' : 'Alles aus'), values: Object.assign({}, cfg.lightingScenes && cfg.lightingScenes[sceneId] || {}) };
+    }),`,
+    'Editierbare Lichtprofile im Snapshot'
+  );
+}
 
 if (!state.func.includes('const externalWifiStatus =')) {
   state.func = replaceOnce(
@@ -1544,6 +1828,30 @@ const snapshot = {`,
     'Aufgelöste generische Schnellzugriffe im Snapshot'
   );
 }
+if (!state.func.includes('const favoriteIds = cfg.ui')) {
+  state.func = replaceOnce(
+    state.func,
+    'const quickAccess = quickAccessIds.map(id => {',
+    'const resolveQuickOption = id => {',
+    'Gemeinsamer Schnellzugriff-/Favoriten-Resolver'
+  );
+  state.func = replaceOnce(
+    state.func,
+    `    return result;
+}).filter(Boolean);
+
+const weatherStored = flow.get('camperWeather');`,
+    `    return result;
+};
+const quickAccess = quickAccessIds.map(resolveQuickOption).filter(Boolean);
+const favoriteFallback = ['switch:water_pump', 'device:inverter', 'device:heater', 'device:maxxfan'];
+const favoriteIds = cfg.ui && Array.isArray(cfg.ui.favoriteIds) ? cfg.ui.favoriteIds : favoriteFallback;
+const favorites = favoriteIds.map(resolveQuickOption).filter(Boolean);
+
+const weatherStored = flow.get('camperWeather');`,
+    'Eigenständig aufgelöste Favoriten im Snapshot'
+  );
+}
 if (state.func.includes('ui: { quickAccessLightIds:')) {
   state.func = state.func.replace(
     /ui: \{ quickAccessLightIds:[^\n]+\},/,
@@ -1553,6 +1861,10 @@ if (state.func.includes('ui: { quickAccessLightIds:')) {
 state.func = state.func.replace(
   "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' },",
   "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
+);
+state.func = state.func.replace(
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, favoriteIds, favorites, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
 );
 
 if (!state.func.includes("const weatherStored = flow.get('camperWeather');")) {
@@ -1598,6 +1910,11 @@ settingsUi.format = String(settingsUi.format || '')
   .replace(",saveToken(){this.patch({security:{apiToken:this.apiToken}});this.apiToken=''}", '')
   .replace(/\.security p\{/g, '.local-access p{')
   .replace(/\.security label\{/g, '.local-access label{');
+
+settingsUi.format = settingsUi.format.replace(
+  '<label><input type="checkbox" v-model="cfg.climateAutomation.enabled" @change="saveClimateAutomation"> Klimaautomatik aktiv</label>',
+  '<label>Betriebsart<select v-model="cfg.climateAutomation.controlMode" @change="saveClimateAutomation"><option value="off">Aus</option><option value="manual">Manuell</option><option value="auto">Automatik</option></select></label>'
+);
 
 settingsUi.format = settingsUi.format
   .replace(/\s*<section class="design-choice">[\s\S]*?<\/section>\s*(?=<section>\s*<h2>System<\/h2>)/, '\n  ')
