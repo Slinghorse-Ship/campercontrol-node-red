@@ -1110,6 +1110,9 @@ const cleanEmbeddedDefaults = source => source.replace(
       supplyRelay: 2,
       exhaustRelay: 1
     });
+    // Hard upper bounds keep the persistent history below 4,685 points:
+    // one detailed day, one month of trends and one year of daily values.
+    value.history = { minuteHours: 24, quarterDays: 30, dailyDays: 365 };
     delete value.temperatureSensors.stratificationWarning;
     return prefix + JSON.stringify(value) + suffix;
   }
@@ -1133,6 +1136,18 @@ const useDefaultContextStore = source => source
   );
 
 settings.func = cleanEmbeddedDefaults(settings.func)
+  .replace(
+    /minuteHours: Math\.round\(number\(cfg\.history && cfg\.history\.minuteHours, \d+, 1, \d+\)\)/,
+    'minuteHours: Math.round(number(cfg.history && cfg.history.minuteHours, 24, 1, 24))'
+  )
+  .replace(
+    /quarterDays: Math\.round\(number\(cfg\.history && cfg\.history\.quarterDays, \d+, 7, \d+\)\)/,
+    'quarterDays: Math.round(number(cfg.history && cfg.history.quarterDays, 30, 7, 30))'
+  )
+  .replace(
+    /dailyDays: Math\.round\(number\(cfg\.history && cfg\.history\.dailyDays, \d+, 30, \d+\)\)/,
+    'dailyDays: Math.round(number(cfg.history && cfg.history.dailyDays, 365, 30, 365))'
+  )
   .replace(
     "    cfg.ventilation = {\n        enabled: boolean(cfg.ventilation && cfg.ventilation.enabled, false),\n        onTemperature: number(cfg.ventilation && cfg.ventilation.onTemperature, 65, 30, 95),\n        hysteresis: number(cfg.ventilation && cfg.ventilation.hysteresis, 5, 2, 20),\n        // Die Hardwarezuordnung ist fest: Cerbo Relais 1 = Zuluft,\n        // Cerbo Relais 2 = Abluft. Sie ist nicht frei umkonfigurierbar.\n        supplyRelay: 1,\n        exhaustRelay: 2\n    };",
     "    cfg.ventilation = {\n        enabled: boolean(cfg.ventilation && cfg.ventilation.enabled, true),\n        manualOn: boolean(cfg.ventilation && cfg.ventilation.manualOn, false),\n        onTemperature: number(cfg.ventilation && cfg.ventilation.onTemperature, 65, 30, 95),\n        hysteresis: number(cfg.ventilation && cfg.ventilation.hysteresis, 5, 2, 20),\n        // Die Hardwarezuordnung ist fest: Cerbo Relais 1 = Abluft,\n        // Cerbo Relais 2 = Zuluft. Sie ist nicht frei umkonfigurierbar.\n        supplyRelay: 2,\n        exhaustRelay: 1\n    };"
@@ -1276,42 +1291,123 @@ commandRouter.func = cleanEmbeddedDefaults(commandRouter.func)
     'for (const index of [0, 1, 2, 3, 9, 11]) if (!output[index].length) output[index] = null;'
   );
 
-// VRM darf den eigenen Internet-Uplink niemals abschalten. Die Bridge gibt
-// den streng validierten Ursprung weiter; lokale HTTP-/SYNC-Befehle dürfen
-// weiterhin ohne origin eintreffen. Der Schutz sitzt vor jeder Dispatch- oder
-// Hardware-Route und lässt das Einschalten aus VRM ausdrücklich zu.
-if (!commandRouter.func.includes('remote_link_protection')) {
+// VRM darf den eigenen Internet-Uplink niemals abschalten. Der Guard arbeitet
+// auf jeder primitiven Aktion, nicht nur auf dem äußeren Request. Dadurch
+// werden alle Aktionen einer Szene vollständig geprüft, bevor auch nur eine
+// Hardware-Nachricht erzeugt wird. Die Effektauflösung folgt exakt den
+// bestehenden STAR-Power- und Wasserpumpen-Routen, sodass auch eine später auf
+// Kanal 5 konfigurierte Pumpe den Remote-Uplink nicht abschalten kann.
+if (!commandRouter.func.includes('const isRemoteLinkProtected = item =>')) {
+  if (commandRouter.func.includes('const remoteLinkProtection = ')) {
+    commandRouter.func = commandRouter.func.replace(
+      /const remoteLinkProtection = [^;]+;/,
+      `const starpowerToggleEffect = item => {
+    const itemTarget = String(item && item.target || '');
+    const itemAction = String(item && item.action || '');
+    if (itemTarget === 'starpower' && itemAction === 'set') {
+        const channel = Number(item && item.channel);
+        const value = Number(item && item.value);
+        return Number.isInteger(channel) && [0, 1].includes(value) ? { channel, value } : null;
+    }
+    if (itemTarget === 'waterPump' && itemAction === 'set' && typeof item.value === 'boolean') {
+        return { channel: Number(cfg.mappings.waterPumpChannel), value: item.value ? 1 : 0 };
+    }
+    return null;
+};
+const isRemoteLinkProtected = item => {
+    const effect = starpowerToggleEffect(item);
+    return origin === 'vrm' && effect !== null && effect.channel === 5 && effect.value === 0;
+};`
+    );
+  } else {
+    commandRouter.func = replaceOnce(
+      commandRouter.func,
+      "const action = String(request.action || '');\nconst now = Date.now();",
+      `const action = String(request.action || '');
+const origin = String(request.origin || '');
+const starpowerToggleEffect = item => {
+    const itemTarget = String(item && item.target || '');
+    const itemAction = String(item && item.action || '');
+    if (itemTarget === 'starpower' && itemAction === 'set') {
+        const channel = Number(item && item.channel);
+        const value = Number(item && item.value);
+        return Number.isInteger(channel) && [0, 1].includes(value) ? { channel, value } : null;
+    }
+    if (itemTarget === 'waterPump' && itemAction === 'set' && typeof item.value === 'boolean') {
+        return { channel: Number(cfg.mappings.waterPumpChannel), value: item.value ? 1 : 0 };
+    }
+    return null;
+};
+const isRemoteLinkProtected = item => {
+    const effect = starpowerToggleEffect(item);
+    return origin === 'vrm' && effect !== null && effect.channel === 5 && effect.value === 0;
+};
+const now = Date.now();`,
+      'Zentraler VRM-Linkschutz'
+    );
+  }
+}
+commandRouter.func = commandRouter.func
+  .replace(
+    "if (remoteLinkProtection) { accepted = false; error = 'remote_link_protection'; }",
+    "if (isRemoteLinkProtected(request)) { accepted = false; error = 'remote_link_protection'; }"
+  );
+if (!commandRouter.func.includes("if (isRemoteLinkProtected(item)) return 'remote_link_protection';")) {
   commandRouter.func = replaceOnce(
     commandRouter.func,
-    "const action = String(request.action || '');\nconst now = Date.now();",
-    `const action = String(request.action || '');
-const origin = String(request.origin || '');
-const remoteLinkProtection = origin === 'vrm' && target === 'starpower' && action === 'set' && Number(request.channel) === 5 && (request.value === false || request.value === 0);
-const now = Date.now();`,
-    'VRM-Linkschutz-Prüfung'
+    "const validateItem = item => {\n",
+    "const validateItem = item => {\n    if (isRemoteLinkProtected(item)) return 'remote_link_protection';\n",
+    'VRM-Linkschutz in Einzelaktionsvalidierung'
   );
+}
+if (!commandRouter.func.includes('const validationError = validateItem(item);')) {
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    "const dispatch = (item, parentId) => {\n",
+    "const dispatch = (item, parentId) => {\n    const validationError = validateItem(item);\n    if (validationError) return { ok: false, error: validationError };\n",
+    'Einzelaktionsvalidierung vor Hardware-Dispatch'
+  );
+}
+if (!commandRouter.func.includes('const commandsBefore = JSON.stringify(commands);')) {
   commandRouter.func = replaceOnce(
     commandRouter.func,
     "let commands = flow.get('camperCommands') || [];\nconst existing = commands.find(item => item.requestId === requestId);",
     "let commands = flow.get('camperCommands') || [];\nconst commandsBefore = JSON.stringify(commands);\nconst existing = commands.find(item => item.requestId === requestId);",
     'Kommandohistorie changed-only vorbereiten'
   );
-  commandRouter.func = replaceOnce(
-    commandRouter.func,
-    "if (target === 'service') {",
-    "if (remoteLinkProtection) { accepted = false; error = 'remote_link_protection'; }\nelse if (target === 'service') {",
-    'VRM-Linkschutz vor allen Routen'
-  );
-  commandRouter.func = commandRouter.func
-    .replace(
-      "source: msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard'), error: ''",
-      "source: origin || (msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard')), error: ''"
-    )
-    .replace(
-      "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nflow.set('camperCommands', commands);",
-      "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nif (JSON.stringify(commands) !== commandsBefore) flow.set('camperCommands', commands);"
-    );
 }
+commandRouter.func = commandRouter.func
+  .replace('} else expanded.push(item);', '} else expanded.push(Object.assign({}, item));')
+  .replace(
+    `        else for (const item of expanded) {
+            item.sceneId = scene.id;
+            const result = dispatch(item, requestId);
+            childIds.push(result.record.requestId);
+        }`,
+    `        else {
+            const commandCountBeforeScene = commands.length;
+            const routeLengthsBeforeScene = new Map([0, 1, 2, 3, 9, 11].map(index => [index, output[index].length]));
+            for (const item of expanded) {
+                item.sceneId = scene.id;
+                const result = dispatch(item, requestId);
+                if (!result.ok || !result.record) { accepted = false; error = result.error || 'scene_dispatch_failed'; break; }
+                childIds.push(result.record.requestId);
+            }
+            if (!accepted) {
+                commands.length = commandCountBeforeScene;
+                for (const [index, length] of routeLengthsBeforeScene) output[index].length = length;
+                childIds = [];
+            }
+        }`
+  )
+  .replace(
+    "source: msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard'), error: ''",
+    "source: origin || (msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard')), error: ''"
+  )
+  .replace(
+    "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nflow.set('camperCommands', commands);",
+    "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nif (JSON.stringify(commands) !== commandsBefore) flow.set('camperCommands', commands);"
+  );
 commandRouter.func = commandRouter.func
   .replace(
     "(request.value === false || Number(request.value) === 0)",
@@ -1606,6 +1702,27 @@ state.func = state.func
   .replace(/(?:if \(JSON\.stringify\(deviceStats\) !== deviceStatsBefore\) )+flow\.set\('camperDeviceStats', deviceStats\);/g, "if (JSON.stringify(deviceStats) !== deviceStatsBefore) flow.set('camperDeviceStats', deviceStats);")
   .replace(/(?:if \(clientsChanged\) )+flow\.set\('camperWsClients', clients\);/g, "if (clientsChanged) flow.set('camperWsClients', clients);");
 
+// Even corrupted legacy context cannot exceed the physical point budget.
+// 24 h at one minute + 30 d at 15 minutes + 365 daily values = 4,685.
+state.func = state.func
+  .replace(
+    /const sample = \(list, period, keepMs(?:, maxPoints)?\) => \{[\s\S]*?\n\};\nsample\(history\.minute,[^\n]+\);\nsample\(history\.quarterHour,[^\n]+\);\nsample\(history\.daily,[^\n]+\);/,
+    `const sample = (list, period, keepMs, maxPoints) => {
+    if (list.length > maxPoints) { list.splice(0, list.length - maxPoints); historyChanged = true; }
+    const bucket = Math.floor(now / period);
+    const previous = list[list.length - 1];
+    if (!previous || Math.floor(previous.timestamp / period) !== bucket) { list.push(historyPoint); historyChanged = true; }
+    const minimum = now - keepMs;
+    const firstFreshIndex = list.findIndex(point => Number(point && point.timestamp) >= minimum);
+    if (firstFreshIndex < 0 && list.length) { list.splice(0, list.length); historyChanged = true; }
+    else if (firstFreshIndex > 0) { list.splice(0, firstFreshIndex); historyChanged = true; }
+    if (list.length > maxPoints) { list.splice(0, list.length - maxPoints); historyChanged = true; }
+};
+sample(history.minute, 60000, Number(cfg.history.minuteHours || 24) * 3600000, 1440);
+sample(history.quarterHour, 900000, Number(cfg.history.quarterDays || 30) * 86400000, 2880);
+sample(history.daily, 86400000, Number(cfg.history.dailyDays || 365) * 86400000, 365);`
+  );
+
 // Der vollständige Snapshot ist auf dem Cerbo die mit Abstand größte
 // Context-Struktur. Selbst der gemeinsame 2-Hz-Gate darf den persistenten
 // localfilesystem-Store nicht für identische Zustände markieren. Sequenz und
@@ -1650,8 +1767,12 @@ if (eventsChanged) {`,
 }
 state.func = state.func
   .replace(
-    "        messages.push({ _session: client.session, payload: JSON.stringify({ type: 'state', data: snapshot }) });",
-    "        if (snapshotChanged) messages.push({ _session: client.session, payload: JSON.stringify({ type: 'state', data: snapshot }) });"
+    /const messages = \[\];\n(?:const stateMessagePayload = snapshotChanged \? JSON\.stringify\(\{ type: 'state', data: snapshot \}\) : '';\n)?/,
+    "const messages = [];\nconst stateMessagePayload = snapshotChanged ? JSON.stringify({ type: 'state', data: snapshot }) : '';\n"
+  )
+  .replace(
+    /^(\s*)(?:if \(snapshotChanged\) )?messages\.push\(\{ _session: client\.session, payload: (?:JSON\.stringify\(\{ type: 'state', data: snapshot \}\)|stateMessagePayload) \}\);$/m,
+    "$1if (snapshotChanged) messages.push({ _session: client.session, payload: stateMessagePayload });"
   )
   .replace(
     "if (clientsChanged) flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];",
@@ -1677,15 +1798,87 @@ if (!state.func.includes('let commandsChanged = false;')) {
   );
 }
 
-const indevoltDiscovery = get('d92d04ca2b1964f9');
-if (!indevoltDiscovery.func.includes('scan.results = scan.results.slice(-8);')) {
-  indevoltDiscovery.func = replaceOnce(
-    indevoltDiscovery.func,
-    'if (index >= 0) scan.results[index] = result; else scan.results.push(result);',
-    'if (index >= 0) scan.results[index] = result; else scan.results.push(result);\nscan.results = scan.results.slice(-8);',
-    'Begrenzte INDEVOLT-Discovery-Ergebnisse'
-  );
+// CH 5 arrives with an initial value and afterwards only on a real D-Bus
+// change. The Function keeps a second changed-only guard so a node regression
+// can neither dirty persistent context nor trigger snapshots repeatedly.
+get('59c75d840f413ba9').onlyChanges = true;
+get('camper_starlink_power_gate').func = `
+const powered = Number(msg.payload) === 1;
+const previous = flow.get('starlinkState') || {};
+const known = typeof previous.powered === 'boolean';
+const wasPowered = previous.powered === true;
+if (known && wasPowered === powered) return null;
+const now = Date.now();
+let state;
+if (!powered) {
+    state = { powered: false, online: false, status: 'Ausgeschaltet', lastSeen: 0, updatedAt: now, alerts: [] };
+} else {
+    state = Object.assign({}, previous, { powered: true, online: false, status: 'Starlink startet', updatedAt: now });
 }
+flow.set('starlinkState', state);
+return [powered && !wasPowered ? { topic: 'starlink.poll', payload: '', _starlinkPowered: true } : null, { topic: 'tick', _camperSource: 'starlink-power' }];
+`;
+
+const indevoltDiscovery = get('d92d04ca2b1964f9');
+indevoltDiscovery.func = `
+const MAX_PAYLOAD_BYTES = 4096;
+const MAX_RESPONSES_PER_SCAN = 4;
+const SCAN_WINDOW_MS = 10000;
+const now = Date.now();
+const storedScan = flow.get('indevoltScan') || {};
+if (storedScan.active !== true || !Number.isFinite(Number(storedScan.started)) || now - Number(storedScan.started) < 0 || now - Number(storedScan.started) > SCAN_WINDOW_MS) return null;
+const text = Buffer.isBuffer(msg.payload) ? msg.payload.toString('utf8') : String(msg.payload || '');
+if (!text || Buffer.byteLength(text, 'utf8') > MAX_PAYLOAD_BYTES) return null;
+let device;
+try { device = JSON.parse(text.trim()); } catch (error) { return null; }
+if (!device || typeof device !== 'object' || Array.isArray(device)) return null;
+const ip = String(device.ip || msg.ip || '').trim();
+const serial = String(device.sn || '').trim().slice(0, 64);
+const parts = ip.split('.');
+if (parts.length !== 4 || !parts.every(part => /^\\d{1,3}$/.test(part) && Number(part) <= 255)) return null;
+
+const scan = Object.assign({}, storedScan, {
+    results: Array.isArray(storedScan.results) ? storedScan.results.slice(-8).map(item => Object.assign({}, item)) : [],
+    acceptedIps: Array.isArray(storedScan.acceptedIps) ? storedScan.acceptedIps.slice(0, MAX_RESPONSES_PER_SCAN).map(String) : []
+});
+if (scan.acceptedIps.includes(ip) || scan.acceptedIps.length >= MAX_RESPONSES_PER_SCAN) return null;
+scan.acceptedIps.push(ip);
+
+const storedRegistry = flow.get('indevoltRegistry') || {};
+const registry = Object.fromEntries(Object.entries(storedRegistry).slice(-8).map(([key, value]) => [key, Object.assign({}, value)]));
+const registryBefore = JSON.stringify(registry);
+const previousDevice = Object.values(registry).sort((a, b) => Math.max(Number(b.lastSeen || 0), Number(b.lastDiscovered || 0)) - Math.max(Number(a.lastSeen || 0), Number(a.lastDiscovered || 0)))[0] || {};
+for (const oldIp of Object.keys(registry)) if (oldIp !== ip) delete registry[oldIp];
+const existing = registry[ip] || null;
+const firmware = String(device.fw || (existing && existing.firmware) || previousDevice.firmware || '').slice(0, 64);
+const openData = String(device.opendata_ver || (existing && existing.openData) || '').slice(0, 32);
+const nextDevice = Object.assign({ ip, firstSeen: now, lastSeen: 0, online: false }, existing || {}, {
+    ip,
+    serial: String(serial || (existing && existing.serial) || previousDevice.serial || '').slice(0, 64),
+    firmware,
+    openData,
+    source: 'udp'
+});
+const metadataChanged = !existing || ['ip', 'serial', 'firmware', 'openData', 'source'].some(key => nextDevice[key] !== existing[key]);
+nextDevice.lastDiscovered = metadataChanged ? now : Number(existing.lastDiscovered || now);
+registry[ip] = nextDevice;
+if (JSON.stringify(registry) !== registryBefore) flow.set('indevoltRegistry', registry);
+
+const result = { ip, serial: nextDevice.serial, firmware: nextDevice.firmware, openData: nextDevice.openData };
+const index = scan.results.findIndex(item => item.ip === ip || (serial && item.serial === serial));
+if (index >= 0) scan.results[index] = result; else scan.results.push(result);
+scan.results = scan.results.slice(-8);
+if (JSON.stringify(scan) !== JSON.stringify(storedScan)) flow.set('indevoltScan', scan);
+return { topic: 'indevolt.discovered', payload: { ip } };
+`;
+const indevoltDirectory = get('99e30f749692fa13');
+indevoltDirectory.func = indevoltDirectory.func.replace(
+  "const next = { active: true, started: Date.now(), token: Date.now().toString(36), results: [], error: '' };",
+  "const next = { active: true, started: Date.now(), token: Date.now().toString(36), results: [], acceptedIps: [], error: '' };"
+).replace(
+  '    if (scan.active) return null;',
+  "    const scanAge = Date.now() - Number(scan.started || 0);\n    if (scan.active && scanAge >= 0 && scanAge <= 10000) return null;"
+);
 
 // WebSocket-Sessions sind flüchtig und werden bereits nach 65 s ohne
 // Heartbeat entfernt. Zusätzlich verhindert das harte 32-Client-Limit, dass

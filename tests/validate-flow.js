@@ -146,15 +146,20 @@ check(!hasImmediateDuplicateWrite, 'Keine unmittelbar doppelten Context-Writes v
 check(!get('12f9ef01215ad8d3').func.includes('persistentStore') && (get('12f9ef01215ad8d3').func.match(/flow\.set\('autotermPersistent'/g) || []).length === 1, 'AUTOTERM besitzt genau einen persistenten Default-Store-Schreibpfad');
 check(!resourceSettingsFunction.includes("else flow.set('camperConfig'") && resourceSettingsFunction.includes("const persist = () => flow.set('camperConfig', cfg);"), 'Settings schreiben Konfiguration nur bei echter Änderung oder Migration');
 check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-500)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Events und Commands besitzen feste Retention einschließlich Legacy-Cleanup');
-check(resourceSnapshotFunction.includes('while (list.length && list[0].timestamp < minimum)') && resourceSnapshotFunction.includes('recent: history.quarterHour.slice(-24)'), 'Historie wird nach Zeitfenster beschnitten und im Snapshot auf 24 Punkte begrenzt');
+check(resourceSnapshotFunction.includes('const firstFreshIndex = list.findIndex') && !resourceSnapshotFunction.includes('list.shift()') && resourceSnapshotFunction.includes('list.splice(0, list.length - maxPoints)') && resourceSnapshotFunction.includes('recent: history.quarterHour.slice(-24)'), 'Historie wird linear nach Zeitfenster und harter Punktzahl beschnitten; der Snapshot enthält 24 Punkte');
+check(resourceSnapshotFunction.includes('3600000, 1440);') && resourceSnapshotFunction.includes('86400000, 2880);') && resourceSnapshotFunction.includes('86400000, 365);'), 'Historie ist hart auf 1.440 Minuten-, 2.880 Viertelstunden- und 365 Tagespunkte begrenzt');
+check(resourceSettingsFunction.includes('minuteHours, 24, 1, 24') && resourceSettingsFunction.includes('quarterDays, 30, 7, 30') && resourceSettingsFunction.includes('dailyDays, 365, 30, 365'), 'Historienkonfiguration bleibt bei höchstens 24 h, 30 d und 365 d');
 check(resourceSettingsFunction.includes('retainCount: Math.round(number') && resourceSettingsFunction.includes('40, 10, 200'), 'Command-Retention ist auf höchstens 200 begrenzt');
 check(resourceSettingsFunction.includes('.slice(0, 12).map((scene') && resourceSettingsFunction.includes('.slice(0, 30).map(item') && resourceSettingsFunction.includes('.slice(0, 20).map((task'), 'Szenen, Szenenaktionen und Wartungseinträge sind begrenzt');
 check(get('6265bf6f9bade1e5').func.includes('ids.slice(32)') && resourceSnapshotFunction.includes('> 65000'), 'WebSocket-Clients sind auf 32 begrenzt und laufen nach 65 Sekunden ab');
-check(get('d92d04ca2b1964f9').func.includes('scan.results = scan.results.slice(-8)'), 'INDEVOLT-Discovery hält höchstens acht temporäre Ergebnisse');
+check(get('d92d04ca2b1964f9').func.includes('MAX_PAYLOAD_BYTES = 4096') && get('d92d04ca2b1964f9').func.includes('MAX_RESPONSES_PER_SCAN = 4') && get('d92d04ca2b1964f9').func.includes('storedScan.active !== true') && get('d92d04ca2b1964f9').func.includes("typeof device !== 'object'") && get('d92d04ca2b1964f9').func.includes('scan.results = scan.results.slice(-8)'), 'INDEVOLT-Discovery akzeptiert nur aktive, begrenzte Objektantworten und höchstens acht Ergebnisse');
+check(get('99e30f749692fa13').func.includes('scanAge >= 0 && scanAge <= 10000'), 'Ein hängen gebliebener INDEVOLT-Scan blockiert keinen späteren Scan');
 check(get('external_wifi_state_update').func.includes('entries = entries.slice(0, 64)') && get('external_wifi_state_update').func.includes('64 * 1024'), 'WLAN-Zustand ist auf 64 Netze und 64 KiB Rohdaten begrenzt');
 check(!resourceSnapshotFunction.includes("flow.set('camperSequence'") && !resourceSnapshotFunction.includes("global.set('camper.snapshot'"), 'Snapshot erzeugt keine redundanten Sequence-/Global-Writes');
 check(resourceSnapshotFunction.includes('if (commandsChanged) flow.set') && resourceSnapshotFunction.includes('if (historyChanged)') && resourceSnapshotFunction.includes('if (clientsChanged) flow.set'), 'Große Context-Sammlungen werden changed-only gespeichert');
 check(resourceSnapshotFunction.includes('const MAX_SNAPSHOT_BYTES = 256 * 1024') && resourceSnapshotFunction.includes("node.error('snapshot_too_large')"), 'Der vollständige lokale Snapshot ist hart auf 256 KiB begrenzt');
+check(resourceSnapshotFunction.includes("const stateMessagePayload = snapshotChanged ? JSON.stringify") && resourceSnapshotFunction.includes("if (snapshotChanged) messages.push({ _session: client.session, payload: stateMessagePayload })"), 'WebSocket-Zustand wird bei Änderung genau einmal vorbereitet und erst danach verteilt');
+check(get('59c75d840f413ba9').onlyChanges === true && get('camper_starlink_power_gate').func.includes('if (known && wasPowered === powered) return null;'), 'CH 5 und Starlink-State besitzen zwei changed-only-Grenzen');
 
 const httpRequests = flows.filter(node => node.type === 'http request');
 check(httpRequests.length === 4, 'Flow besitzt exakt vier bekannte HTTP-Request-Nodes');
@@ -375,8 +380,8 @@ const settingsCommandOutput = runCommandRouter({ payload: { target: 'settings', 
 check(settingsCommandOutput?.[4]?.topic === 'ws.settings' && settingsCommandOutput?.[4]?.payload?.patch?.ui?.quickAccessIds?.[0] === 'switch:water_pump', 'Favoritenauswahl nutzt den vorhandenen Settings-Router');
 check([0, 1, 2, 3, 9, 11].every(index => settingsCommandOutput?.[index] == null), 'Favoritenauswahl erzeugt keinen Hardwarebefehl');
 
-const runProtectedCommand = payload => {
-  const values = new Map([['camperConfig', migratedConfig], ['camperCommands', []], ['camperWsClients', {}]]);
+const runProtectedCommand = (payload, config = migratedConfig) => {
+  const values = new Map([['camperConfig', JSON.parse(JSON.stringify(config))], ['camperCommands', []], ['camperWsClients', {}]]);
   const writes = [];
   const flowApi = {
     get: key => values.get(key),
@@ -390,13 +395,119 @@ const runProtectedCommand = payload => {
 const vrmStarlinkOff = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value: false });
 check(vrmStarlinkOff.output?.[5]?.statusCode === 400 && vrmStarlinkOff.output?.[5]?.payload?.error === 'remote_link_protection', 'VRM-Starlink-AUS wird mit remote_link_protection abgelehnt');
 check([0, 1, 2, 3, 9, 11].every(index => vrmStarlinkOff.output?.[index] == null), 'VRM-Starlink-AUS erreicht keinen Hardwareausgang');
-check(!vrmStarlinkOff.writes.includes('camperCommands'), 'Abgelehnter VRM-Linkbefehl erzeugt keinen persistenten Kommandoeintrag');
+check(vrmStarlinkOff.output?.[7] == null && !vrmStarlinkOff.writes.includes('camperCommands'), 'Abgelehnter VRM-Linkbefehl erzeugt weder Tick noch persistenten Kommandoeintrag');
+for (const value of [0, '0', '', null]) {
+  const coercedOff = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value });
+  check(coercedOff.output?.[5]?.statusCode === 400 && [0, 1, 2, 3, 9, 11].every(index => coercedOff.output?.[index] == null), `VRM-Starlink-AUS mit ${JSON.stringify(value)} kann die Normalisierung nicht umgehen`);
+}
 const vrmStarlinkOn = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value: true });
 check(vrmStarlinkOn.output?.[0]?.[0]?.payload?.value === 1 && vrmStarlinkOn.output?.[5]?.statusCode === 202, 'VRM darf Starlink weiterhin einschalten');
 for (const origin of ['gx', 'sync', undefined]) {
   const localOff = runProtectedCommand({ ...(origin ? { origin } : {}), target: 'starpower', action: 'set', channel: 5, value: false });
   check(localOff.output?.[0]?.[0]?.payload?.value === 0 && localOff.output?.[5]?.statusCode === 202, `${origin || 'lokal'} darf Starlink ausschalten`);
 }
+
+const remoteSceneConfig = JSON.parse(JSON.stringify(migratedConfig));
+remoteSceneConfig.scenes = [{
+  id: 'remote-cut', name: 'Remote cut', visible: true, actions: [
+    { target: 'waterPump', action: 'set', value: true },
+    { target: 'starpower', action: 'set', channel: 5, value: false },
+    { target: 'starpower', action: 'set', channel: 7, value: true }
+  ]
+}, {
+  id: 'remote-safe', name: 'Remote safe', visible: true,
+  actions: [{ target: 'starpower', action: 'set', channel: 5, value: true }]
+}];
+const vrmSceneOff = runProtectedCommand({ origin: 'vrm', target: 'scene', action: 'run', sceneId: 'remote-cut' }, remoteSceneConfig);
+check(vrmSceneOff.output?.[5]?.statusCode === 400 && vrmSceneOff.output?.[5]?.payload?.error === 'remote_link_protection', 'VRM-Szene mit Starlink-AUS wird zentral abgelehnt');
+check([0, 1, 2, 3, 9, 11].every(index => vrmSceneOff.output?.[index] == null) && vrmSceneOff.output?.[7] == null, 'VRM-Szene wird vor der ersten Hardwareausgabe atomar abgelehnt');
+check(!vrmSceneOff.writes.includes('camperCommands') && (vrmSceneOff.values.get('camperCommands') || []).length === 0, 'Abgelehnte VRM-Szene persistiert weder Eltern- noch Kindkommandos');
+const vrmSceneSafe = runProtectedCommand({ origin: 'vrm', target: 'scene', action: 'run', sceneId: 'remote-safe' }, remoteSceneConfig);
+check(vrmSceneSafe.output?.[5]?.statusCode === 202 && vrmSceneSafe.output?.[0]?.[0]?.payload?.value === 1, 'VRM-Szene ohne Uplink-AUS bleibt erlaubt');
+for (const origin of ['gx', 'sync']) {
+  const localSceneOff = runProtectedCommand({ origin, target: 'scene', action: 'run', sceneId: 'remote-cut' }, remoteSceneConfig);
+  check(localSceneOff.output?.[5]?.statusCode === 202 && localSceneOff.output?.[0]?.some(item => item.payload?.channel === 5 && item.payload?.value === 0), `${origin} darf die lokale AUS-Szene weiterhin ausführen`);
+}
+const pumpOnUplinkConfig = JSON.parse(JSON.stringify(remoteSceneConfig));
+pumpOnUplinkConfig.mappings.waterPumpChannel = 5;
+pumpOnUplinkConfig.scenes.push({ id: 'pump-off', name: 'Pump off', visible: true, actions: [{ target: 'waterPump', action: 'set', value: false }] });
+const vrmPumpOff = runProtectedCommand({ origin: 'vrm', target: 'waterPump', action: 'set', value: false }, pumpOnUplinkConfig);
+const vrmPumpSceneOff = runProtectedCommand({ origin: 'vrm', target: 'scene', action: 'run', sceneId: 'pump-off' }, pumpOnUplinkConfig);
+check(vrmPumpOff.output?.[5]?.payload?.error === 'remote_link_protection' && vrmPumpOff.output?.[0] == null, 'VRM-Linkschutz erfasst eine direkt auf Kanal 5 gemappte Wasserpumpe');
+check(vrmPumpSceneOff.output?.[5]?.payload?.error === 'remote_link_protection' && vrmPumpSceneOff.output?.[0] == null, 'VRM-Linkschutz erfasst Kanal 5 auch innerhalb einer Pumpenszene');
+const areaOnUplinkConfig = JSON.parse(JSON.stringify(remoteSceneConfig));
+const outsideLight = areaOnUplinkConfig.lights.find(light => light.area === 'outside');
+outsideLight.channel = 5;
+areaOnUplinkConfig.scenes.push({ id: 'outside-off', name: 'Outside off', visible: true, actions: [{ target: 'starpower', action: 'set', area: 'outside', value: 0 }] });
+const vrmAreaSceneOff = runProtectedCommand({ origin: 'vrm', target: 'scene', action: 'run', sceneId: 'outside-off' }, areaOnUplinkConfig);
+check(vrmAreaSceneOff.output?.[5]?.payload?.error === 'remote_link_protection' && [0, 1, 2, 3, 9, 11].every(index => vrmAreaSceneOff.output?.[index] == null), 'VRM-Linkschutz prüft auch jede aus einer Flächenaktion expandierte Einzelaktion');
+check(get('6265bf6f9bade1e5').func.includes("if (isRemoteLinkProtected(item)) return 'remote_link_protection';") && get('6265bf6f9bade1e5').func.includes('const validationError = validateItem(item);'), 'Ein zentraler Guard schützt Einzelaktionsvalidierung und jeden Hardware-Dispatch');
+
+const runStarlinkPowerGate = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('camper_starlink_power_gate').func || '');
+const starlinkGateValues = new Map();
+const starlinkGateWrites = [];
+const starlinkGateFlow = {
+  get: key => starlinkGateValues.get(key),
+  set: (key, value) => { starlinkGateValues.set(key, value); starlinkGateWrites.push(key); }
+};
+const firstStarlinkOff = runStarlinkPowerGate({ payload: 0 }, starlinkGateFlow, {}, {}, {}, {});
+const firstStarlinkTimestamp = starlinkGateValues.get('starlinkState')?.updatedAt;
+const duplicateStarlinkOff = runStarlinkPowerGate({ payload: 0 }, starlinkGateFlow, {}, {}, {}, {});
+check(firstStarlinkOff?.[1]?.topic === 'tick' && starlinkGateWrites.filter(key => key === 'starlinkState').length === 1, 'Erster CH-5-Zustand initialisiert den Starlink-State genau einmal');
+check(duplicateStarlinkOff == null && starlinkGateValues.get('starlinkState')?.updatedAt === firstStarlinkTimestamp, 'Identischer CH-5-Zustand erzeugt weder Timestamp noch Context-Write oder Tick');
+const starlinkOnTransition = runStarlinkPowerGate({ payload: 1 }, starlinkGateFlow, {}, {}, {}, {});
+check(starlinkOnTransition?.[0]?.topic === 'starlink.poll' && starlinkOnTransition?.[1]?.topic === 'tick' && starlinkGateValues.get('starlinkState')?.powered === true, 'Echter CH-5-EIN-Übergang startet Poll und Snapshot weiterhin');
+
+const runIndevoltDiscovery = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('d92d04ca2b1964f9').func || '');
+const indevoltPacket = (ip, serial = 'IV-1') => JSON.stringify({ ip, sn: serial, fw: '1.0', opendata_ver: '2' });
+const createIndevoltFlow = scan => {
+  const values = new Map([['indevoltScan', scan], ['indevoltRegistry', {}]]);
+  const writes = [];
+  return {
+    values,
+    writes,
+    api: {
+      get: key => values.get(key),
+      set: (key, value) => { values.set(key, value); writes.push(key); }
+    }
+  };
+};
+const inactiveIndevolt = createIndevoltFlow({ active: false, results: [] });
+const inactiveDiscovery = runIndevoltDiscovery({ payload: indevoltPacket('172.24.24.12') }, inactiveIndevolt.api, {}, {}, {}, {});
+check(inactiveDiscovery == null && inactiveIndevolt.writes.length === 0, 'INDEVOLT-UDP außerhalb eines aktiven Scans wird vollständig ignoriert');
+for (const payload of ['null', '[]', '"text"']) {
+  const invalidIndevolt = createIndevoltFlow({ active: true, started: Date.now(), token: 'scan-invalid', results: [], acceptedIps: [] });
+  check(runIndevoltDiscovery({ payload }, invalidIndevolt.api, {}, {}, {}, {}) == null && invalidIndevolt.writes.length === 0, `INDEVOLT verwirft Nicht-Objekt-JSON ${payload}`);
+}
+const activeIndevolt = createIndevoltFlow({ active: true, started: Date.now(), token: 'scan-a', results: [], acceptedIps: [] });
+const firstDiscovery = runIndevoltDiscovery({ payload: indevoltPacket('172.24.24.12') }, activeIndevolt.api, {}, {}, {}, {});
+const writesAfterFirstDiscovery = activeIndevolt.writes.length;
+const duplicateDiscovery = runIndevoltDiscovery({ payload: indevoltPacket('172.24.24.12') }, activeIndevolt.api, {}, {}, {}, {});
+check(firstDiscovery?.topic === 'indevolt.discovered' && duplicateDiscovery == null && activeIndevolt.writes.length === writesAfterFirstDiscovery, 'Doppelte INDEVOLT-Antwort desselben Scans erzeugt weder Poll noch Context-Write');
+activeIndevolt.values.set('indevoltScan', { active: true, started: Date.now(), token: 'scan-b', results: [], acceptedIps: [] });
+activeIndevolt.writes.length = 0;
+const unchangedNextScan = runIndevoltDiscovery({ payload: indevoltPacket('172.24.24.12') }, activeIndevolt.api, {}, {}, {}, {});
+check(unchangedNextScan?.topic === 'indevolt.discovered' && !activeIndevolt.writes.includes('indevoltRegistry'), 'Unverändertes INDEVOLT-Gerät schreibt das Registry im nächsten Scan nicht erneut');
+const burstIndevolt = createIndevoltFlow({ active: true, started: Date.now(), token: 'scan-burst', results: [], acceptedIps: [] });
+let burstDiscoveryOutputs = 0;
+for (let index = 1; index <= 20; index += 1) {
+  if (runIndevoltDiscovery({ payload: indevoltPacket(`172.24.24.${index}`, `IV-${index}`) }, burstIndevolt.api, {}, {}, {}, {})) burstDiscoveryOutputs += 1;
+}
+check(burstDiscoveryOutputs === 4 && burstIndevolt.values.get('indevoltScan').acceptedIps.length === 4, 'INDEVOLT-Burst ist hart auf vier Antworten pro Scan begrenzt');
+check((burstIndevolt.values.get('indevoltScan').results || []).length <= 8 && Object.keys(burstIndevolt.values.get('indevoltRegistry') || {}).length === 1, 'INDEVOLT hält höchstens acht Scanergebnisse und genau ein Fahrzeuggerät');
+const oversizedIndevolt = createIndevoltFlow({ active: true, started: Date.now(), token: 'scan-large', results: [], acceptedIps: [] });
+check(runIndevoltDiscovery({ payload: 'x'.repeat(4097) }, oversizedIndevolt.api, {}, {}, {}, {}) == null && oversizedIndevolt.writes.length === 0, 'INDEVOLT verwirft UDP-Payloads über 4 KiB vor JSON-Verarbeitung');
+const runIndevoltDirectory = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('99e30f749692fa13').func || '');
+const staleScanNow = Date.now();
+const staleScanValues = new Map([
+  ['indevoltScan', { active: true, started: staleScanNow - 20000, token: 'stale', results: [] }],
+  ['indevoltLastScan', staleScanNow - 200000],
+  ['indevoltRegistry', {}],
+  ['camperConfig', { network: {} }]
+]);
+const staleScanFlow = { get: key => staleScanValues.get(key), set: (key, value) => staleScanValues.set(key, value) };
+const staleScanOutput = runIndevoltDirectory({ topic: 'poll', payload: 'poll' }, staleScanFlow, {}, {}, {}, {});
+check(staleScanOutput?.[2]?.payload === 'scan' && staleScanValues.get('indevoltScan')?.active === true && staleScanValues.get('indevoltScan')?.token !== 'stale', 'Abgestürzter INDEVOLT-Scan wird beim nächsten Poll sicher ersetzt');
 
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
@@ -559,6 +670,61 @@ check(burstOutputs === 1, '500 identische Aggregator-Aufrufe erzeugen genau eine
 check(burstWrites.get('camperSnapshot') === 1, '500 identische Aggregator-Aufrufe persistieren den großen Snapshot genau einmal');
 check(Buffer.byteLength(JSON.stringify(burstValues.get('camperSnapshot')), 'utf8') < 256 * 1024, 'Dynamischer Snapshot bleibt unter dem 256-KiB-Limit');
 check(!burstGlobalValues.has('camper.snapshot'), 'Burst erzeugt keine redundante globale Snapshot-Kopie');
+
+const countSteadyStringifies = clients => {
+  burstValues.set('camperWsClients', clients);
+  const originalStringify = JSON.stringify;
+  let calls = 0;
+  let output;
+  try {
+    JSON.stringify = (...args) => { calls += 1; return originalStringify(...args); };
+    Date.now = () => burstNow;
+    output = runBurstAggregator({ topic: 'steady-ws' }, burstFlow, {}, { warn() {}, error() {}, status() {} }, {}, {}, burstGlobal);
+  } finally {
+    JSON.stringify = originalStringify;
+    Date.now = originalDateNow;
+  }
+  return { calls, output };
+};
+const steadyWithoutClient = countSteadyStringifies({});
+const steadyWithClient = countSteadyStringifies({ client: { session: { id: 'client' }, lastSeen: burstNow } });
+check(steadyWithoutClient.output == null && steadyWithClient.output == null, 'Unveränderter Snapshot erzeugt mit und ohne WebSocket-Client keine Ausgabe');
+check(steadyWithClient.calls === steadyWithoutClient.calls, 'Unveränderter Snapshot wird nicht pro WebSocket-Client serialisiert');
+const changedClientValues = new Map([['camperSensors', {}], ['camperWsClients', Object.fromEntries(Array.from({ length: 32 }, (_value, index) => [`client-${index}`, { session: { id: `client-${index}` }, lastSeen: burstNow }]))]]);
+const changedClientFlow = { get: key => changedClientValues.get(key), set: (key, value) => changedClientValues.set(key, value) };
+let changedStateSerializations = 0;
+let changedClientOutput;
+const originalStringifyForClients = JSON.stringify;
+try {
+  Date.now = () => burstNow;
+  JSON.stringify = (...args) => {
+    if (args[0]?.type === 'state' && args[0]?.data) changedStateSerializations += 1;
+    return originalStringifyForClients(...args);
+  };
+  changedClientOutput = runBurstAggregator({ topic: 'changed-ws' }, changedClientFlow, {}, { warn() {}, error() {}, status() {} }, {}, {}, burstGlobal);
+} finally {
+  JSON.stringify = originalStringifyForClients;
+  Date.now = originalDateNow;
+}
+check(changedStateSerializations === 1 && changedClientOutput?.[1]?.length === 32, 'Geänderter Snapshot wird für 32 Clients genau einmal serialisiert und 32-mal verteilt');
+check(new Set((changedClientOutput?.[1] || []).map(message => message.payload)).size === 1, 'Alle WebSocket-Clients teilen denselben vorbereiteten Snapshot-Payload');
+
+const historyNow = burstNow;
+const historyPoint = index => ({ timestamp: historyNow - index * 1000, batterySoc: 70, solarPower: 100, freshLevel: 80 });
+const oversizedHistory = {
+  minute: Array.from({ length: 2000 }, (_value, index) => historyPoint(1999 - index)),
+  quarterHour: Array.from({ length: 4000 }, (_value, index) => historyPoint(3999 - index)),
+  daily: Array.from({ length: 500 }, (_value, index) => historyPoint(499 - index))
+};
+const historyValues = new Map([['camperSensors', {}], ['camperHistory', oversizedHistory]]);
+const historyFlow = { get: key => historyValues.get(key), set: (key, value) => historyValues.set(key, value) };
+try {
+  Date.now = () => historyNow;
+  runBurstAggregator({ topic: 'history-cap' }, historyFlow, {}, { warn() {}, error() {}, status() {} }, {}, {}, burstGlobal);
+} finally {
+  Date.now = originalDateNow;
+}
+check(historyValues.get('camperHistory').minute.length <= 1440 && historyValues.get('camperHistory').quarterHour.length <= 2880 && historyValues.get('camperHistory').daily.length <= 365, 'Legacy-Historie wird dynamisch auf insgesamt höchstens 4.685 Punkte gekürzt');
 const steadyNow = Date.now();
 const steadyOrion = runStateAggregator({
   'orion.mode': { value: 1, seen: steadyNow - 5 * 60 * 1000 },

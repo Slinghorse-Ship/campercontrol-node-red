@@ -86,11 +86,16 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
 - Die D-Bus-Bridge fragt den lokalen Zustand im Normalbetrieb mit 1 Hz ab. Bei
   einem hängenden Node-RED wartet sie nach Fehlern zusätzlich 1, 2, 5 und
   anschließend 10 Sekunden, statt den überlasteten HTTP-Port weiter zu fluten.
-- Der Bridge-Befehl verlangt den Ursprung `vrm` oder `gx`. Bei `vrm` lehnt der
-  zentrale Router ausschließlich das Ausschalten von STAR-Power-Kanal 5 mit
-  `remote_link_protection` ab, damit die einzige Remote-Verbindung nicht ihren
-  eigenen Uplink trennt. Einschalten aus VRM sowie Ausschalten auf GX, Ford
-  SYNC oder lokal bleiben erlaubt.
+- Der Bridge-Befehl verlangt den Ursprung `vrm` oder `gx`. Bei `vrm` prüft der
+  zentrale Router jede primitive Aktion vor dem Hardware-Dispatch und lehnt
+  das Ausschalten von STAR-Power-Kanal 5 mit `remote_link_protection` ab. Das
+  gilt auch für vollständig vorab geprüfte Szenen und eine auf Kanal 5
+  konfigurierte Wasserpumpenroute. Einschalten aus VRM sowie Ausschalten auf
+  GX, Ford SYNC oder lokal bleiben erlaubt.
+- Persistente Historie ist zusätzlich zur Zeitbereinigung hart auf 4.685
+  Punkte begrenzt: 24 Stunden Minutendaten, 30 Tage Viertelstundenwerte und
+  365 Tageswerte. Das deckt Tagesdiagnose, Monatstrend und Jahresvergleich ab,
+  ohne mehrere MiB alten Context auf dem Cerbo zu halten.
 - V2 zeichnet auf 800 × 480 ohne künstlichen Geräte-Rand bis an alle vier
   Displayecken. Das Transit-Liniensymbol besitzt in Tag und Nacht echte
   Transparenz und denselben kompakten FORD-Grill wie die SYNC-App.
