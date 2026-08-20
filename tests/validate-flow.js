@@ -168,7 +168,7 @@ check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HT
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
 check(flows.length === 358, 'Master bleibt exakt der validierte 358-Node-Flow');
-check(packageJson.version === '4.3.0', 'Releaseversion ist 4.3.0');
+check(packageJson.version === '4.4.0', 'Releaseversion ist 4.4.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
 check(!dashboard.includes('design-v1') && !dashboard.includes('fs-detail-page'), 'Dashboard enthält keine V1-Runtime oder V1-Detailseiten');
