@@ -221,7 +221,8 @@
             <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regenrisiko</span></div>
           </div>
           <div class="cc2-weather-days"><article v-for="day in v2WeatherDaily" :key="day.date" class="cc2-weather-day"><small>{{v2WeatherDay(day.date)}}</small><span aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(day.icon)"></use></svg></span><strong>{{fmt(day.maxC,0)}}°</strong><em>{{fmt(day.minC,0)}}°</em><b>{{fmt(day.maxHourlyPrecipProbabilityPct,0)}} %</b></article></div>
-          <footer class="cc2-weather-footer"><span>{{v2Weather.attribution||'Quelle: Deutscher Wetterdienst (DWD)'}}</span><span>{{v2Weather.modelRunUtc?'Modell '+v2WeatherTime(v2Weather.modelRunUtc):''}}</span></footer>
+          <div v-if="v2SunText||v2TideText" class="cc2-weather-sun-tide"><span v-if="v2SunText">{{v2SunText}}</span><span v-if="v2TideText" :class="v2Tides&&v2Tides.stale?'is-stale':''">{{v2TideText}}</span></div>
+          <footer class="cc2-weather-footer"><span>{{v2Weather.attribution||'Quelle: Deutscher Wetterdienst (DWD)'}}{{v2Tides?' · Tide: '+v2Tides.attribution:''}}</span><span>{{v2Weather.modelRunUtc?'Modell '+v2WeatherTime(v2Weather.modelRunUtc):''}}</span></footer>
         </template>
         <div v-else class="cc2-weather-empty"><svg class="cc2-light-icon" aria-hidden="true"><use href="#cc2-weather-cloud"></use></svg><strong>Wetter noch nicht verfügbar</strong><small>Der Cerbo lädt die DWD-Vorhersage zentral und stellt den letzten Cache bereit.</small></div>
       </aside>

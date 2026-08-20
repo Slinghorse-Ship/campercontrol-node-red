@@ -207,7 +207,7 @@ if (own(source, 'tides') && source.tides != null) {
         heightM: required(item, 'heightM', value => number(value, -200, 200))
     } : null;
     const candidate = object(tideSource) ? {
-        source: required(tideSource, 'source', value => string(value, 64)),
+        source: required(tideSource, 'source', value => value === 'BSH' ? value : undefined),
         attribution: required(tideSource, 'attribution', value => string(value, 256)),
         station: tideStation,
         updatedUtc: required(tideSource, 'updatedUtc', timestamp),

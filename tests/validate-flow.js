@@ -299,6 +299,12 @@ const acceptedWeather = runWeatherValidator({ value: JSON.stringify(weatherFixtu
 check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31, 'Gültiges D-Bus-Wetter samt Tide wird als Snapshot-Änderung übernommen');
 check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.longitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
 check(runWeatherValidator(JSON.stringify(weatherFixture)) === null, 'Identisches Wetter erzeugt keine zweite Snapshot-Aktualisierung');
+const nullHeightTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, nextLow: { ...weatherFixture.tides.nextLow, heightM: null } } };
+check(runWeatherValidator(JSON.stringify(nullHeightTides))?.payload?.tides?.nextLow?.heightM === null, 'BSH-Ereignis ohne belastbare Höhe bleibt mit null erhalten und wird nicht zu 0 erfunden');
+const wrongTideSource = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:02Z', tides: { ...weatherFixture.tides, source: 'unofficial' } };
+check(runWeatherValidator(JSON.stringify(wrongTideSource))?.payload?.tides === undefined, 'Nur der explizite BSH-Tidevertrag wird akzeptiert');
+const invalidTideTime = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:03Z', tides: { ...weatherFixture.tides, nextHigh: { ...weatherFixture.tides.nextHigh, t: 'not-a-date' } } };
+check(runWeatherValidator(JSON.stringify(invalidTideTime))?.payload?.tides === undefined, 'Ungültige BSH-Ereigniszeit wird fail-closed entfernt');
 const invalidTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 61 } } };
 const acceptedWithoutInvalidTides = runWeatherValidator(JSON.stringify(invalidTides));
 check(acceptedWithoutInvalidTides?.payload?.schema === 1 && acceptedWithoutInvalidTides.payload.tides === undefined, 'Ungültige oder zu weit entfernte Tide wird fail-closed entfernt, ohne DWD-Wetter zu blockieren');
@@ -311,6 +317,7 @@ check(runWeatherValidator(JSON.stringify(incompleteWeather)) === null && JSON.st
 const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0], t: 'not-a-date' }] };
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
+check(dashboard.includes('v2Tides') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne und den getrennt validierten BSH-HW/NW-Status');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
