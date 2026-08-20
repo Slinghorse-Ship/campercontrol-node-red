@@ -217,6 +217,7 @@
               <rect v-for="bar in v2WeatherRainBars" :key="bar.key" :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height" class="cc2-chart-rain"></rect>
               <polyline v-if="v2WeatherTempPoints" :points="v2WeatherTempPoints" class="cc2-chart-temp"></polyline>
               <polyline v-if="v2TidePoints" :points="v2TidePoints" class="cc2-chart-tide"></polyline>
+              <g v-if="v2TideScale" class="cc2-chart-tide-scale"><text x="390" y="59" text-anchor="end">{{v2TideScale.max}}</text><text x="390" y="136" text-anchor="end">{{v2TideScale.min}}</text></g>
               <g v-for="label in v2WeatherChartLabels" :key="label.key"><text :x="label.x" y="148" text-anchor="middle">{{label.hour}}</text><text :x="label.x" :y="label.y" text-anchor="middle" class="cc2-chart-temp-label">{{label.temp}}°</text></g>
             </svg>
             <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regenrisiko</span><span v-if="v2TidePoints"><i class="cc2-legend-tide"></i>Tide</span></div>

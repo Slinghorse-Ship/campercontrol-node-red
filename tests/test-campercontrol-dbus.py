@@ -92,11 +92,22 @@ class CamperControlDbusContractTest(unittest.TestCase):
             "lights": {"items": [{"id": "inside_main", "on": True}]},
             "vehicle": {"highBeam": {"manualOn": False}},
             "power": {"inverter": {"on": True}},
+            "operations": {
+                "scenes": [{"id": "camping", "name": "Camping", "seen": 123}],
+                "lightScenes": [{"id": "night", "values": {"inside_main": 20}}],
+            },
             "system": {"network": {"password": "must-not-cross-vrm"}},
         }
         fragments = MODULE.compact_state(state)
         self.assertEqual(tuple(fragments), MODULE.STATE_SECTIONS)
         self.assertEqual(json.loads(fragments["energy"]), {"battery": {"soc": 87.5}})
+        self.assertEqual(
+            json.loads(fragments["operations"]),
+            {
+                "lightScenes": [{"id": "night", "values": {"inside_main": 20}}],
+                "scenes": [{"id": "camping", "name": "Camping"}],
+            },
+        )
         self.assertNotIn("seen", fragments["ui"])
         self.assertNotIn("weather", "".join(fragments.values()))
         self.assertNotIn("password", "".join(fragments.values()))

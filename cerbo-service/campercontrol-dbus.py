@@ -38,7 +38,7 @@ STATUS_HEARTBEAT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 2.0
 MAX_COMMAND_BYTES = 16 * 1024
 MAX_FRAGMENT_BYTES = 128 * 1024
-STATE_SECTIONS = ("ui", "energy", "water", "climate", "lights", "vehicle", "power")
+STATE_SECTIONS = ("ui", "energy", "water", "climate", "lights", "vehicle", "power", "operations")
 
 # These fields are useful for Node-RED diagnostics but would force MQTT updates
 # even when every value rendered by the camper UI is unchanged.

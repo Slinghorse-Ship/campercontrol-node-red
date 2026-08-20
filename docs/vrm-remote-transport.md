@@ -22,6 +22,7 @@ der QML-Oberfläche verwendeten Abschnitte bereit:
 - `/State/Lights`
 - `/State/Vehicle`
 - `/State/Power`
+- `/State/Operations`
 
 Jeder Wert ist ein eigenständiges, kompaktes JSON-Objekt. Zeitstempel und
 Diagnosefelder, die bei jedem Zyklus wechseln, werden entfernt. Ein Fragment
