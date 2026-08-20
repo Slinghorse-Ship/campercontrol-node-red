@@ -329,6 +329,7 @@ const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hou
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
 check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die optionale 24-h-Tidekurve mit eigener Skala');
+check(dashboard.includes('v2TemperatureScale') && dashboardV2Markup.includes('cc2-chart-temp-scale') && dashboardV2Markup.includes('v2TemperatureScale.min') && dashboardV2Markup.includes('v2TemperatureScale.max') && dashboardV2Css.includes('.cc2-chart-temp-scale text'), 'Wetterchart zeigt eine numerische linke Temperaturachse in Grad Celsius');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
