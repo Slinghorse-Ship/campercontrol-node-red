@@ -72,17 +72,21 @@ TIDE_FAIL_CLOSED_SECONDS = 7 * 24 * 60 * 60
 TIDE_RETRY_SECONDS = 6 * 60 * 60
 TIDE_EVENT_HORIZON_SECONDS = 9 * 24 * 60 * 60
 TIDE_CURVE_PUBLIC_HORIZON_SECONDS = 24 * 60 * 60
-# Six additional cached hours keep a complete 24-hour chart available until
-# the next regular six-hour weather refresh. These are hourly normalized
-# points, never the roughly 10-minute BSH raw curve.
-TIDE_CURVE_CACHE_HORIZON_SECONDS = 30 * 60 * 60
+# Keep a dense 72-hour normalized curve so the public 24-hour chart remains
+# complete throughout the full 48-hour stale window, even when BSH cannot be
+# reached. 145 points are roughly half-hourly; the raw 10-minute series is
+# never cached or published and the encoded cache remains below 16 KiB.
+TIDE_CURVE_CACHE_HORIZON_SECONDS = 72 * 60 * 60
 # A tide prediction is useful near the coast and tidal rivers, but a nearest
 # station must not make tides appear across inland Germany. Sixty kilometres
 # covers common coastal campsites while failing closed well before that occurs.
 TIDE_MAX_DISTANCE_KM = 60.0
 TIDE_CACHE_EVENT_LIMIT = 32
-TIDE_CACHE_CURVE_LIMIT = 32
-TIDE_PUBLIC_CURVE_LIMIT = 25
+TIDE_CACHE_CURVE_LIMIT = 145
+# Twenty-five interior samples plus two explicitly interpolated 24-hour
+# boundaries.  This adds the two visually missing chart endpoints without
+# retaining or publishing the roughly ten-minute raw BSH series.
+TIDE_PUBLIC_CURVE_LIMIT = 27
 TIDE_RAW_EVENT_LIMIT = 256
 TIDE_RAW_CURVE_LIMIT = 2048
 TIDE_DISCOVERY_RADII_KM = (10.0, 25.0, TIDE_MAX_DISTANCE_KM)
@@ -366,13 +370,101 @@ def _raw_curve_samples(properties: dict[str, Any], now: dt.datetime) -> list[dic
     return deduplicated
 
 
-def _downsample_evenly(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+def _downsample_curve(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     if len(points) <= limit:
         return points
     if limit < 2:
         return points[:limit]
-    indexes = [round(index * (len(points) - 1) / (limit - 1)) for index in range(limit)]
-    return [points[index] for index in indexes]
+
+    # Keep both chart boundaries and the actual turning points. A purely even
+    # index sample can miss every HW/NW peak although the source curve is
+    # perfectly valid. The remaining slots repeatedly split the largest time
+    # gap, which stays deterministic and distributes points across 24 hours.
+    extrema: list[int] = []
+    for index in range(1, len(points) - 1):
+        before = float(points[index - 1]["heightM"])
+        current = float(points[index]["heightM"])
+        after = float(points[index + 1]["heightM"])
+        if (current > before and current >= after) or (current < before and current <= after):
+            extrema.append(index)
+    if len(extrema) > limit - 2:
+        extrema = [
+            extrema[round(index * (len(extrema) - 1) / max(1, limit - 3))]
+            for index in range(limit - 2)
+        ]
+
+    selected = {0, len(points) - 1, *extrema}
+    while len(selected) < limit:
+        ordered = sorted(selected)
+        gaps = [(right - left, left, right) for left, right in zip(ordered, ordered[1:]) if right - left > 1]
+        if not gaps:
+            break
+        _size, left, right = max(gaps)
+        selected.add((left + right) // 2)
+    return [points[index] for index in sorted(selected)]
+
+
+def _curve_boundary(points: list[dict[str, Any]], target: dt.datetime) -> dict[str, Any] | None:
+    previous: tuple[dt.datetime, float] | None = None
+    for point in points:
+        timestamp = parse_utc_z(point.get("t"))
+        try:
+            height = float(point.get("heightM"))
+        except (TypeError, ValueError):
+            continue
+        if timestamp is None or not math.isfinite(height):
+            continue
+        if timestamp == target:
+            return {"t": iso_utc(target), "heightM": round(height, 2)}
+        if timestamp > target:
+            if previous is None:
+                return None
+            before_time, before_height = previous
+            span = (timestamp - before_time).total_seconds()
+            # Gaps beyond three hours indicate missing source data. Do not
+            # invent a long straight segment merely to fill a chart edge.
+            if span <= 0 or span > 3 * 60 * 60:
+                return None
+            ratio = (target - before_time).total_seconds() / span
+            value = before_height + (height - before_height) * ratio
+            return {"t": iso_utc(target), "heightM": round(value, 2)}
+        previous = (timestamp, height)
+    return None
+
+
+def _curve_window(
+    points: list[dict[str, Any]],
+    start: dt.datetime,
+    end: dt.datetime,
+    limit: int,
+) -> list[dict[str, Any]]:
+    current = start.astimezone(dt.timezone.utc)
+    finish = end.astimezone(dt.timezone.utc)
+    ordered = sorted(points, key=lambda item: str(item.get("t") or ""))
+    selected: list[dict[str, Any]] = []
+    start_point = _curve_boundary(ordered, current)
+    if start_point is not None:
+        selected.append(start_point)
+    for point in ordered:
+        timestamp = parse_utc_z(point.get("t"))
+        if timestamp is None or timestamp <= current or timestamp >= finish:
+            continue
+        try:
+            height = round(float(point.get("heightM")), 2)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(height) and abs(height) <= 200:
+            selected.append({"t": iso_utc(timestamp), "heightM": height})
+    end_point = _curve_boundary(ordered, finish)
+    if end_point is not None:
+        selected.append(end_point)
+    deduplicated: list[dict[str, Any]] = []
+    for point in sorted(selected, key=lambda item: str(item["t"])):
+        if deduplicated and point["t"] == deduplicated[-1]["t"]:
+            deduplicated[-1] = point
+        else:
+            deduplicated.append(point)
+    return _downsample_curve(deduplicated, limit)
 
 
 def _normalized_curve(samples: list[dict[str, Any]], now: dt.datetime) -> list[dict[str, Any]]:
@@ -381,8 +473,6 @@ def _normalized_curve(samples: list[dict[str, Any]], now: dt.datetime) -> list[d
     points: list[dict[str, Any]] = []
     for sample in samples:
         timestamp = sample["timestamp"]
-        if timestamp < current or timestamp > end:
-            continue
         # The official OGC curve's automated forecast is the most useful
         # future water level. The astronomical tidal prediction is the
         # documented fallback when no model value is present.
@@ -392,7 +482,7 @@ def _normalized_curve(samples: list[dict[str, Any]], now: dt.datetime) -> list[d
         if height_m is None:
             continue
         points.append({"t": iso_utc(timestamp), "heightM": height_m})
-    return _downsample_evenly(points, TIDE_CACHE_CURVE_LIMIT)
+    return _curve_window(points, current, end, TIDE_CACHE_CURVE_LIMIT)
 
 
 def _curve_extrema(samples: list[dict[str, Any]], now: dt.datetime) -> list[dict[str, Any]]:
@@ -656,23 +746,79 @@ def parse_mosmix_kmz(kmz: bytes) -> tuple[str | None, str, dict[str, list[float 
     return iso_utc(issue_time), station_name, series, times
 
 
+# Complete list from the DWD "Wettercode ww" table used by MOSMIX.  The
+# second tuple item is the official DWD priority (lower means more relevant
+# for the daily representative condition).  Codes 96--99 are not listed in
+# the current MOSMIX table; they are handled defensively below, without ever
+# inferring hail from the published code 95.
+MOSMIX_WW: dict[int, tuple[str, int]] = {
+    95: ("thunderstorm", 1),
+    57: ("freezing-rain", 2),
+    56: ("freezing-rain", 3),
+    67: ("freezing-rain", 4),
+    66: ("freezing-rain", 5),
+    86: ("snow", 6),
+    85: ("snow", 7),
+    84: ("sleet", 8),
+    83: ("sleet", 9),
+    82: ("showers", 10),
+    81: ("showers", 11),
+    80: ("showers", 12),
+    75: ("snow", 13),
+    73: ("snow", 14),
+    71: ("snow", 15),
+    69: ("sleet", 16),
+    68: ("sleet", 17),
+    55: ("drizzle", 18),
+    53: ("drizzle", 19),
+    51: ("drizzle", 20),
+    65: ("rain", 21),
+    63: ("rain", 22),
+    61: ("rain", 23),
+    49: ("fog", 24),
+    45: ("fog", 25),
+    3: ("cloudy", 26),
+    2: ("partly-cloudy", 27),
+    1: ("partly-cloudy", 28),
+    0: ("clear", 29),
+}
+
+
+def _weather_code(code: float | None) -> int | None:
+    if code is None or not math.isfinite(code):
+        return None
+    return int(round(code))
+
+
 def weather_icon(code: float | None) -> str:
-    if code is None:
+    value = _weather_code(code)
+    if value is None:
         return "unknown"
-    value = int(round(code))
-    if value in (95, 96, 97, 98, 99):
-        return "storm"
-    if value in range(71, 80) or value in (85, 86):
-        return "snow"
-    if value in range(45, 50):
-        return "fog"
-    if value in range(50, 70) or value in range(80, 85):
-        return "rain"
-    if value == 0:
-        return "clear"
-    if value in (1, 2):
-        return "partly-cloudy"
-    return "cloudy"
+    configured = MOSMIX_WW.get(value)
+    if configured is not None:
+        return configured[0]
+    # Defensive WMO fallbacks.  MOSMIX currently does not publish these
+    # values, but 96/99 explicitly include hail and must not be flattened to
+    # ordinary thunder if they appear in a future feed.
+    if value in (96, 99):
+        return "hail"
+    if value in (97, 98):
+        return "thunderstorm"
+    return "unknown"
+
+
+def weather_priority(code: float | None) -> int:
+    value = _weather_code(code)
+    if value is None:
+        return 10_000
+    configured = MOSMIX_WW.get(value)
+    if configured is not None:
+        return configured[1]
+    if value in (96, 99):
+        return 1
+    if value in (97, 98):
+        return 2
+    return 10_000
 
 
 def _normalized_hour(series: dict[str, list[float | None]], times: list[dt.datetime], index: int) -> dict[str, Any]:
@@ -762,7 +908,7 @@ def build_snapshot(
         winds = [item["windKmh"] for item in items if item["windKmh"] is not None]
         gusts = [item["gustKmh"] for item in items if item["gustKmh"] is not None]
         codes = [item["ww"] for item in items if item["ww"] is not None]
-        representative = max(codes, default=None, key=lambda code: (weather_icon(code) != "clear", code))
+        representative = min(codes, default=None, key=weather_priority)
         rise = _sun_event(date, station.latitude, station.longitude, True)
         setting = _sun_event(date, station.latitude, station.longitude, False)
         daily.append(
@@ -938,13 +1084,12 @@ def _valid_tide_cache(value: dict[str, Any], now: dt.datetime) -> dict[str, Any]
 
     normalized_curve: list[dict[str, Any]] = []
     raw_curve = value.get("curve")
-    curve_end = current + dt.timedelta(seconds=TIDE_CURVE_PUBLIC_HORIZON_SECONDS)
     if isinstance(raw_curve, list) and len(raw_curve) <= TIDE_CACHE_CURVE_LIMIT:
         for point in raw_curve:
             if not isinstance(point, dict):
                 continue
             timestamp = parse_utc_z(point.get("t"))
-            if timestamp is None or timestamp < current or timestamp > curve_end:
+            if timestamp is None:
                 continue
             try:
                 height_m = round(float(point.get("heightM")), 2)
@@ -953,14 +1098,8 @@ def _valid_tide_cache(value: dict[str, Any], now: dt.datetime) -> dict[str, Any]
             if not math.isfinite(height_m) or abs(height_m) > 200:
                 continue
             normalized_curve.append({"t": iso_utc(timestamp), "heightM": height_m})
-    normalized_curve.sort(key=lambda item: str(item["t"]))
-    deduplicated_curve: list[dict[str, Any]] = []
-    for point in normalized_curve:
-        if deduplicated_curve and point["t"] == deduplicated_curve[-1]["t"]:
-            deduplicated_curve[-1] = point
-        else:
-            deduplicated_curve.append(point)
-    deduplicated_curve = _downsample_evenly(deduplicated_curve, TIDE_PUBLIC_CURVE_LIMIT)
+    curve_end = current + dt.timedelta(seconds=TIDE_CURVE_PUBLIC_HORIZON_SECONDS)
+    deduplicated_curve = _curve_window(normalized_curve, current, curve_end, TIDE_PUBLIC_CURVE_LIMIT)
 
     result = {
         "source": TIDE_SOURCE_NAME,

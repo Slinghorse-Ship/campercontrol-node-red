@@ -13,6 +13,7 @@ const transitLightPath = path.join(root, 'dashboard', 'assets', 'transit-line-sy
 const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const packagePath = path.join(root, 'package.json');
 const starlinkHelperPath = path.join(root, 'cerbo-service', 'starlink-read-status.sh');
+const deviceHttpHelperPath = path.join(root, 'cerbo-service', 'device-http-bounded.py');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
 const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
@@ -27,6 +28,7 @@ const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const starlinkHelperSource = fs.readFileSync(starlinkHelperPath, 'utf8');
+const deviceHttpHelperSource = fs.readFileSync(deviceHttpHelperPath, 'utf8');
 const dashboard = dashboardTemplate
   .replace('<!-- CAMPERCONTROL_V2_MARKUP -->', dashboardV2Markup)
   .replace('/* CAMPERCONTROL_V2_CSS */', dashboardV2Css);
@@ -164,13 +166,13 @@ check(resourceSnapshotFunction.includes("const stateMessagePayload = snapshotCha
 check(get('59c75d840f413ba9').onlyChanges === true && get('camper_starlink_power_gate').func.includes('if (known && wasPowered === powered) return null;'), 'CH 5 und Starlink-State besitzen zwei changed-only-Grenzen');
 
 const httpRequests = flows.filter(node => node.type === 'http request');
-check(httpRequests.length === 4, 'Flow besitzt exakt vier bekannte HTTP-Request-Nodes');
+check(httpRequests.length === 2, 'Flow besitzt nur die zwei bekannten Loopback-WLAN-HTTP-Request-Nodes');
 check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.name || ''} ${node.url || ''}`)), 'Node-RED führt keinen Wetter-HTTP-Abruf aus');
 check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
 check(flows.length === 358, 'Master bleibt exakt der validierte 358-Node-Flow');
-check(packageJson.version === '4.4.0', 'Releaseversion ist 4.4.0');
+check(packageJson.version === '4.5.0', 'Releaseversion ist 4.5.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
 check(!dashboard.includes('design-v1') && !dashboard.includes('fs-detail-page'), 'Dashboard enthält keine V1-Runtime oder V1-Detailseiten');
@@ -312,8 +314,10 @@ const wrongTideSource = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:02Z
 check(runWeatherValidator(JSON.stringify(wrongTideSource))?.payload?.tides === undefined, 'Nur der explizite BSH-Tidevertrag wird akzeptiert');
 const invalidTideTime = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:03Z', tides: { ...weatherFixture.tides, nextHigh: { ...weatherFixture.tides.nextHigh, t: 'not-a-date' } } };
 check(runWeatherValidator(JSON.stringify(invalidTideTime))?.payload?.tides === undefined, 'Ungültige BSH-Ereigniszeit wird fail-closed entfernt');
-const oversizedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:04Z', tides: { ...weatherFixture.tides, curve: Array.from({ length: 26 }, (_, index) => ({ t: new Date(Date.UTC(2026, 7, 20, 6 + index)).toISOString(), heightM: 5 })) } };
-check(runWeatherValidator(JSON.stringify(oversizedTideCurve))?.payload?.tides === undefined, 'Mehr als 25 Tidepunkte werden ressourcenschonend verworfen');
+const acceptedBoundaryTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:04Z', tides: { ...weatherFixture.tides, curve: Array.from({ length: 27 }, (_, index) => ({ t: new Date(Date.UTC(2026, 7, 20, 6 + index)).toISOString(), heightM: 5 })) } };
+check(runWeatherValidator(JSON.stringify(acceptedBoundaryTideCurve))?.payload?.tides?.curve?.length === 27, '25 Tidekurvenpunkte plus zwei 24-h-Randpunkte werden akzeptiert');
+const oversizedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:05Z', tides: { ...weatherFixture.tides, curve: Array.from({ length: 28 }, (_, index) => ({ t: new Date(Date.UTC(2026, 7, 20, 6 + index)).toISOString(), heightM: 5 })) } };
+check(runWeatherValidator(JSON.stringify(oversizedTideCurve))?.payload?.tides === undefined, 'Mehr als 27 Tidepunkte werden ressourcenschonend verworfen');
 const unsortedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:05Z', tides: { ...weatherFixture.tides, curve: [...weatherFixture.tides.curve].reverse() } };
 check(runWeatherValidator(JSON.stringify(unsortedTideCurve))?.payload?.tides === undefined, 'Nicht chronologische Tidepunkte werden verworfen');
 const nullTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:06Z', tides: { ...weatherFixture.tides, curve: weatherFixture.tides.curve.map((point, index) => index === 1 ? { ...point, heightM: null } : point) } };
@@ -330,8 +334,10 @@ check(runWeatherValidator(JSON.stringify(incompleteWeather)) === null && JSON.st
 const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0], t: 'not-a-date' }] };
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
-check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die optionale 24-h-Tidekurve mit eigener Skala');
+check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboard.includes('v2WeatherChartWindow') && dashboard.includes('tide.length>=2?new Date(tide[0].date)') && dashboard.includes('24*60*60*1000') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die Tidekurve auf derselben echten 24-h-Zeitachse ohne einen gerundeten DWD-Rand abzuschneiden');
 check(dashboard.includes('v2TemperatureScale') && dashboardV2Markup.includes('cc2-chart-temp-scale') && dashboardV2Markup.includes('v2TemperatureScale.min') && dashboardV2Markup.includes('v2TemperatureScale.max') && dashboardV2Css.includes('.cc2-chart-temp-scale text'), 'Wetterchart zeigt eine numerische linke Temperaturachse in Grad Celsius');
+check(["'freezing-rain':'cc2-weather-freezing-rain'", "sleet:'cc2-weather-sleet'", "hail:'cc2-weather-hail'"].every(token => dashboard.includes(token)) && ['cc2-weather-freezing-rain', 'cc2-weather-sleet', 'cc2-weather-hail'].every(icon => dashboardV2Markup.includes(`id="${icon}"`)), 'Dashboard unterscheidet gefrierenden Niederschlag, Schneeregen und defensiven DWD-Hagel visuell');
+check(dashboard.includes("||'cc2-weather-unknown'") && dashboardV2Markup.includes('id="cc2-weather-unknown"'), 'Unbekannte DWD-Codes bleiben neutral und werden nicht als bewölkt erfunden');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
@@ -1075,12 +1081,16 @@ check(get('external_wifi_connect_prepare').func.includes('JSON.stringify({ servi
 check(!flows.some(node => node.type === 'exec' && /wifi|connman/i.test(`${node.id} ${node.name || ''} ${node.command || ''}`)), 'WLAN-Passwort gelangt nicht in Exec-Argumente');
 check(get('camper_service_action_router').outputs === 9, 'Service-Router besitzt neun Ausgänge');
 check((get('camper_service_action_router').wires?.[8] || []).includes('external_wifi_connect_prepare'), 'wifiConnect führt nur zum sicheren Prepare-Node');
-check(['19bb36cb2ea4a5c4', 'camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh'].every(id => get(id).drop === true), 'AUTOTERM- und Service-Delays koaleszieren Bursts ohne Queuewachstum');
-check(get('152e2fdda301b9e4').func.includes("node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);"), 'AUTOTERM-Stop leert die begrenzte Warteschlange und bleibt priorisiert');
-check(get('7a397c289a9a3fc2').ret === 'bin' && get('a553dda137d3e5bf').ret === 'bin', 'Geräte-HTTP-Antworten bleiben bis zum Byte-Limit ungeparst');
+check(['camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh'].every(id => get(id).drop === true), 'Service-Refresh-Delays koaleszieren Bursts ohne Queuewachstum');
+const autotermSessionSource = get('152e2fdda301b9e4').func;
+const autotermDelayNode = get('19bb36cb2ea4a5c4');
+check(autotermDelayNode.pauseType === 'queue' && autotermDelayNode.rate === '1' && autotermDelayNode.rateUnits === 'second' && autotermDelayNode.drop === false, 'AUTOTERM hält pro Topic nur den neuesten Befehl und sendet ressourcenschonend mit 1 Hz');
+check(get('152e2fdda301b9e4').outputs === 4 && get('152e2fdda301b9e4').wires?.[3]?.includes('de71d27b69b0462f') && autotermSessionSource.includes("msg.topic = 'autoterm.stop';") && autotermSessionSource.includes("msg.topic = 'autoterm.latest';") && autotermSessionSource.indexOf("outgoingCommand === 0x03") < autotermSessionSource.indexOf('!session.ready && !diagnosticProbe'), 'AUTOTERM-Stop umgeht die Queue auch vor Session-Ready; normale Bursts bleiben latest-wins begrenzt');
+check(get('7a397c289a9a3fc2').type === 'exec' && get('7a397c289a9a3fc2').command.includes('device-http-bounded.py indevolt') && get('a553dda137d3e5bf').type === 'exec' && get('a553dda137d3e5bf').command.includes('device-http-bounded.py vanturtle'), 'INDEVOLT und VanTurtle verwenden den vor dem Body-Puffer begrenzten HTTP-Transport');
+check(deviceHttpHelperSource.includes('MAX_HEADER_BYTES = 16 * 1024') && deviceHttpHelperSource.includes('MAX_BODY_BYTES = 64 * 1024') && deviceHttpHelperSource.includes('if length > MAX_BODY_BYTES') && deviceHttpHelperSource.includes('ResponseTooLarge'), 'Lokaler Geräte-HTTP-Helper begrenzt Header, Content-Length, Chunked und EOF-Antworten');
 check(get('51f0c8be7e1b4dbe').func.includes('MAX_DEVICE_RESPONSE_BYTES = 64 * 1024') && get('51f0c8be7e1b4dbe').func.includes('.slice(0, 64)'), 'INDEVOLT begrenzt Antwort und persistierte Seriennummer');
 check(get('30de81a830592ed2').func.includes('MAX_DEVICE_RESPONSE_BYTES = 64 * 1024'), 'VanTurtle begrenzt jeden REST-/WebSocket-Statusframe');
-check(starlinkHelperSource.includes('dd bs=65537 count=1') && get('camper_starlink_parse').func.includes('MAX_STARLINK_RESPONSE_BYTES = 64 * 1024'), 'Starlink-Ausgabe ist im Prozess und vor JSON/Context hart begrenzt');
+check(starlinkHelperSource.includes('process.stdout.read(maximum + 1)') && starlinkHelperSource.includes('signal.alarm(8)') && starlinkHelperSource.includes('raise SystemExit(124)') && starlinkHelperSource.includes('raise SystemExit(return_code)') && starlinkHelperSource.includes('if overflow:') && get('camper_starlink_parse').func.includes('MAX_STARLINK_RESPONSE_BYTES = 64 * 1024'), 'Starlink-Ausgabe liest gestückeltes JSON bis EOF, besitzt einen äußeren Wall-Clock-Timeout, erhält grpcurl-Exitcodes und ist vor JSON/Context hart begrenzt');
 check(get('camper_starlink_parse').func.includes(".slice(0, 32)") && get('camper_starlink_parse').func.includes("'attitudeUncertaintyDeg'"), 'Starlink persistiert höchstens 32 Alarme und nur bekannte Alignment-Skalare');
 for (const id of ['163774a1197dbe4a', '152e2fdda301b9e4', 'e063b67ea21aacaf', '30de81a830592ed2']) {
   check(get(id).func.includes('warnRateLimited'), `${id} drosselt ungültige Hot-Path-Meldungen`);

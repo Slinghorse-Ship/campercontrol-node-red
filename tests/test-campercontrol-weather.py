@@ -82,6 +82,56 @@ def sample_kmz() -> bytes:
 
 
 class CamperControlWeatherTest(unittest.TestCase):
+    def test_all_official_mosmix_ww_codes_and_defensive_hail_are_classified(self):
+        expected = {
+            0: "clear",
+            1: "partly-cloudy",
+            2: "partly-cloudy",
+            3: "cloudy",
+            45: "fog",
+            49: "fog",
+            51: "drizzle",
+            53: "drizzle",
+            55: "drizzle",
+            56: "freezing-rain",
+            57: "freezing-rain",
+            61: "rain",
+            63: "rain",
+            65: "rain",
+            66: "freezing-rain",
+            67: "freezing-rain",
+            68: "sleet",
+            69: "sleet",
+            71: "snow",
+            73: "snow",
+            75: "snow",
+            80: "showers",
+            81: "showers",
+            82: "showers",
+            83: "sleet",
+            84: "sleet",
+            85: "snow",
+            86: "snow",
+            95: "thunderstorm",
+        }
+        self.assertEqual(set(MODULE.MOSMIX_WW), set(expected))
+        self.assertEqual({code: MODULE.weather_icon(code) for code in expected}, expected)
+        self.assertEqual(MODULE.weather_icon(96), "hail")
+        self.assertEqual(MODULE.weather_icon(99), "hail")
+        self.assertEqual(MODULE.weather_icon(97), "thunderstorm")
+        self.assertEqual(MODULE.weather_icon(98), "thunderstorm")
+        self.assertEqual(MODULE.weather_icon(77), "unknown")
+        self.assertEqual(MODULE.weather_icon(None), "unknown")
+
+    def test_daily_representative_uses_official_dwd_priority_not_numeric_order(self):
+        ordered = [95, 57, 56, 67, 66, 86, 85, 84, 83, 82, 81, 80, 75, 73, 71, 69, 68, 55, 53, 51, 65, 63, 61, 49, 45, 3, 2, 1, 0]
+        self.assertEqual(
+            sorted(ordered, key=MODULE.weather_priority),
+            ordered,
+        )
+        self.assertLess(MODULE.weather_priority(57), MODULE.weather_priority(67))
+        self.assertLess(MODULE.weather_priority(51), MODULE.weather_priority(65))
+
     def test_dbus_parser_accepts_plain_and_value_formats_used_by_venus(self):
         self.assertEqual(MODULE._parse_dbus_output("'com.victronenergy.gps.ve_ttyACM0'\n"), "com.victronenergy.gps.ve_ttyACM0")
         self.assertEqual(MODULE._parse_dbus_output("0\n"), 0)
@@ -185,7 +235,7 @@ class CamperControlWeatherTest(unittest.TestCase):
         now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
         value = json.loads(BSH_STATION)
         raw_curve = []
-        for index in range(181):
+        for index in range(481):
             timestamp = now + dt.timedelta(minutes=10 * index)
             centimetres = 600 + 120 * math.sin(index / 12)
             raw_curve.append(
@@ -212,11 +262,51 @@ class CamperControlWeatherTest(unittest.TestCase):
             "events": events,
             "curve": curve,
         }
+        cache["events"] = [
+            {
+                "t": MODULE.iso_utc(now + dt.timedelta(hours=hours)),
+                "type": "HW" if index % 2 == 0 else "NW",
+                "heightM": 7.2 if index % 2 == 0 else 5.1,
+            }
+            for index, hours in enumerate(range(3, 82, 6))
+        ]
         six_hours_later = now + dt.timedelta(hours=6)
         public = MODULE._valid_tide_cache(cache, six_hours_later)
-        self.assertLessEqual(len(public["curve"]), MODULE.TIDE_PUBLIC_CURVE_LIMIT)
-        last_curve_time = MODULE.parse_time(public["curve"][-1]["t"])
-        self.assertGreaterEqual(last_curve_time - six_hours_later, dt.timedelta(hours=23, minutes=30))
+        self.assertEqual(len(public["curve"]), MODULE.TIDE_PUBLIC_CURVE_LIMIT)
+        self.assertEqual(MODULE.parse_time(public["curve"][0]["t"]), six_hours_later)
+        self.assertEqual(
+            MODULE.parse_time(public["curve"][-1]["t"]),
+            six_hours_later + dt.timedelta(hours=24),
+        )
+        # The four HW/NW turns inside this 24-hour sine fixture must survive
+        # the resource-saving reduction. They were lost by the old even-index
+        # sampler and caused a visibly flattened/shortened Tide curve.
+        extrema = {
+            item["t"]
+            for index, item in enumerate(public["curve"][1:-1], 1)
+            if (
+                item["heightM"] > public["curve"][index - 1]["heightM"]
+                and item["heightM"] >= public["curve"][index + 1]["heightM"]
+            )
+            or (
+                item["heightM"] < public["curve"][index - 1]["heightM"]
+                and item["heightM"] <= public["curve"][index + 1]["heightM"]
+            )
+        }
+        self.assertEqual(len(extrema), 4)
+
+        # A complete 24-hour curve is still available at the exact stale
+        # boundary when the Cerbo has been unable to refresh BSH for 48 hours.
+        forty_eight_hours_later = now + dt.timedelta(hours=48)
+        offline_public = MODULE._valid_tide_cache(cache, forty_eight_hours_later)
+        self.assertIsNotNone(offline_public)
+        self.assertTrue(offline_public["stale"])
+        self.assertEqual(len(offline_public["curve"]), MODULE.TIDE_PUBLIC_CURVE_LIMIT)
+        self.assertEqual(MODULE.parse_time(offline_public["curve"][0]["t"]), forty_eight_hours_later)
+        self.assertEqual(
+            MODULE.parse_time(offline_public["curve"][-1]["t"]),
+            forty_eight_hours_later + dt.timedelta(hours=24),
+        )
 
     def test_bsh_json_and_cache_size_limits_fail_closed(self):
         now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
@@ -280,7 +370,7 @@ class CamperControlWeatherTest(unittest.TestCase):
         self.assertEqual(snapshot["source"], "DWD MOSMIX_L")
         self.assertEqual(snapshot["attribution"], "Quelle: Deutscher Wetterdienst")
         self.assertEqual(snapshot["hourly"][0]["tempC"], 20.0)
-        self.assertEqual(snapshot["hourly"][7]["icon"], "storm")
+        self.assertEqual(snapshot["hourly"][7]["icon"], "thunderstorm")
         self.assertEqual(snapshot["hourly"][1]["windKmh"], 7.2)
         self.assertIsNone(snapshot["hourly"][-1]["precipProbabilityPct"])
         self.assertEqual(len(snapshot["daily"]), 6)
@@ -562,7 +652,9 @@ class CamperControlWeatherTest(unittest.TestCase):
         self.assertEqual(MODULE.TIDE_REFRESH_SECONDS, 21600)
         self.assertEqual(MODULE.TIDE_RETRY_SECONDS, 21600)
         self.assertEqual(MODULE.TIDE_MAX_DISTANCE_KM, 60.0)
-        self.assertEqual(MODULE.TIDE_PUBLIC_CURVE_LIMIT, 25)
+        self.assertEqual(MODULE.TIDE_PUBLIC_CURVE_LIMIT, 27)
+        self.assertEqual(MODULE.TIDE_CACHE_CURVE_LIMIT, 145)
+        self.assertEqual(MODULE.TIDE_CURVE_CACHE_HORIZON_SECONDS, 72 * 60 * 60)
         self.assertEqual(MODULE.MAX_TIDE_DISCOVERY_TOTAL_BYTES, 4 * 1024 * 1024)
 
 

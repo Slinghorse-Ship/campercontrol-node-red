@@ -209,7 +209,7 @@ if (own(source, 'tides') && source.tides != null) {
     let tideCurve;
     let tideCurveValid = true;
     if (object(tideSource) && own(tideSource, 'curve')) {
-        tideCurveValid = Array.isArray(tideSource.curve) && tideSource.curve.length >= 2 && tideSource.curve.length <= 25;
+        tideCurveValid = Array.isArray(tideSource.curve) && tideSource.curve.length >= 2 && tideSource.curve.length <= 27;
         if (tideCurveValid) {
             tideCurve = tideSource.curve.map(item => object(item) ? {
                 t: required(item, 't', timestamp),
@@ -2235,10 +2235,56 @@ indevoltDirectory.func = indevoltDirectory.func.replace(
   "    const scanAge = Date.now() - Number(scan.started || 0);\n    if (scan.active && scanAge >= 0 && scanAge <= 10000) return null;"
 );
 
-// Every external response and every delayed action must have a hard memory
-// bound.  Device HTTP nodes return raw bytes so the Function can reject an
-// oversized body before JSON.parse allocates a second large object.
-for (const id of ['7a397c289a9a3fc2', 'a553dda137d3e5bf']) get(id).ret = 'bin';
+// Node-RED 4.1.11's core HTTP Request node asks got for responseType=buffer
+// without maxResponseSize, so a downstream byte check cannot cap transport
+// memory. Keep both existing node IDs/wires but turn them into fixed Exec
+// calls to the stdlib-only helper, which bounds headers and body while reading.
+const configureBoundedDeviceExec = (id, command, addPayload, timer, name) => {
+  const node = get(id);
+  for (const key of ['method', 'ret', 'paytoqs', 'url', 'tls', 'persist', 'proxy', 'insecureHTTPParser', 'authType', 'senderr', 'headers']) delete node[key];
+  Object.assign(node, {
+    type: 'exec',
+    command,
+    addpay: addPayload,
+    append: '',
+    useSpawn: 'false',
+    timer: String(timer),
+    winHide: false,
+    oldrc: false,
+    name
+  });
+};
+
+configureBoundedDeviceExec(
+  '7a397c289a9a3fc2',
+  '/usr/bin/python3 /data/campercontrol/service/device-http-bounded.py indevolt',
+  true,
+  10,
+  'INDEVOLT OpenData · 64-KiB-Transport'
+);
+configureBoundedDeviceExec(
+  'a553dda137d3e5bf',
+  '/usr/bin/python3 /data/campercontrol/service/device-http-bounded.py vanturtle',
+  false,
+  10,
+  'VanTurtle /state · 64-KiB-Transport'
+);
+
+if (indevoltDirectory.func.includes("topic: 'indevolt.poll', payload: '', method: 'POST',")) {
+  indevoltDirectory.func = indevoltDirectory.func.replace(
+    `topic: 'indevolt.poll', payload: '', method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        url: 'http://' + device.ip + ':8080/rpc/Indevolt.GetData?config=' + JSON.stringify({ t: points }),
+        requestTimeout: 8000, _indevoltIp: device.ip, _indevoltRequestedAt: Date.now()`,
+    `topic: 'indevolt.poll', payload: device.ip,
+        _indevoltIp: device.ip, _indevoltRequestedAt: Date.now()`
+  );
+}
+get('4beb6dcf25f97c2c').func = `
+msg.topic = 'vanturtle.poll';
+msg.payload = '';
+return msg;
+`;
 
 const indevoltMerge = get('51f0c8be7e1b4dbe');
 if (!indevoltMerge.func.includes('const MAX_DEVICE_RESPONSE_BYTES = 64 * 1024;')) {
@@ -2358,21 +2404,88 @@ flow.set('starlinkState', state);
 return { topic: 'tick', _camperSource: 'starlink-diagnostics' };
 `;
 
-// Coalesce every delayed refresh.  The AUTOTERM queue retains only the newest
-// normal command; an explicit stop first clears the pending item and is then
-// queued itself, so a safety stop can never be hidden by a telemetry burst.
-for (const id of ['19bb36cb2ea4a5c4', 'camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh']) get(id).drop = true;
+// Coalesce every delayed refresh. Service delays are lossy rate gates by
+// design. AUTOTERM instead uses the installed Core Delay node's topic queue:
+// one latest init packet plus one latest normal packet, independent of burst
+// length. Stop bypasses that queue on a dedicated Function output and clears
+// both pending topics, so it also works before session.ready becomes true.
+for (const id of ['camper_network_repair_delay', 'camper_bluetooth_repair_delay', 'external_wifi_scan_refresh']) get(id).drop = true;
+const autotermDelay = get('19bb36cb2ea4a5c4');
+Object.assign(autotermDelay, {
+  pauseType: 'queue',
+  rate: '1',
+  nbRateUnits: '1',
+  rateUnits: 'second',
+  drop: false,
+  allowrate: false,
+  outputs: 1
+});
 const autotermSession = get('152e2fdda301b9e4');
-if (!autotermSession.func.includes("node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);")) {
+autotermSession.outputs = 4;
+autotermSession.wires = [
+  ['19bb36cb2ea4a5c4'],
+  ['12f9ef01215ad8d3'],
+  ['163774a1197dbe4a'],
+  ['de71d27b69b0462f']
+];
+autotermSession.func = autotermSession.func
+  .replace(/return \[\{ topic: 'autoterm\.init', payload: packet\('AA03000004'\) \}, info\(\), null(?:, null)?\];/,
+    "return [{ topic: 'autoterm.init', payload: packet('AA03000004') }, info(), null, null];")
+  .replace(/return \[null, null, null(?:, null)?\];/g, 'return [null, null, null, null];')
+  .replace(/return \[null, info\(\), null(?:, null)?\];/g, 'return [null, info(), null, null];')
+  .replace(/return \[transmit, changed \? info\(\) : null, msg(?:, null)?\];/,
+    'return [transmit, changed ? info() : null, msg, null];');
+if (autotermSession.func.includes("node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);")) {
   autotermSession.func = autotermSession.func.replace(
-    "    msg.payload = outgoing;\n    return [msg, null, null];",
-    `    msg.payload = outgoing;
+    `    const diagnosticProbe = outgoingCommand === 0x0f || outgoingCommand === 0x06;
+    if (!session.ready && !diagnosticProbe) {
+        session.status = 'Initialisierung läuft – Bedienbefehl noch gesperrt';
+        save();
+        return [null, info(), null, null];
+    }
+    msg.payload = outgoing;
     if (outgoingCommand === 0x03) {
         const stopMessage = Object.assign({}, msg, { payload: outgoing });
         node.send([[{ reset: true, topic: 'autoterm.reset' }, stopMessage], null, null]);
         return null;
     }
-    return [msg, null, null];`
+    return [msg, null, null];`,
+    `    if (outgoingCommand === 0x03) {
+        msg.topic = 'autoterm.stop';
+        msg.payload = outgoing;
+        session.status = 'Stopp wird gesendet';
+        save();
+        return [{ reset: true, topic: 'autoterm.reset' }, info(), null, msg];
+    }
+    const diagnosticProbe = outgoingCommand === 0x0f || outgoingCommand === 0x06;
+    if (!session.ready && !diagnosticProbe) {
+        session.status = 'Initialisierung läuft – Bedienbefehl noch gesperrt';
+        save();
+        return [null, info(), null, null];
+    }
+    msg.topic = 'autoterm.latest';
+    msg.payload = outgoing;
+    return [msg, null, null, null];`
+  );
+} else if (!autotermSession.func.includes("msg.topic = 'autoterm.stop';")) {
+  autotermSession.func = autotermSession.func.replace(
+    `    const diagnosticProbe = outgoingCommand === 0x0f || outgoingCommand === 0x06;
+    if (!session.ready && !diagnosticProbe) {`,
+    `    if (outgoingCommand === 0x03) {
+        msg.topic = 'autoterm.stop';
+        msg.payload = outgoing;
+        session.status = 'Stopp wird gesendet';
+        save();
+        return [{ reset: true, topic: 'autoterm.reset' }, info(), null, msg];
+    }
+    const diagnosticProbe = outgoingCommand === 0x0f || outgoingCommand === 0x06;
+    if (!session.ready && !diagnosticProbe) {`
+  ).replace(
+    `    msg.payload = outgoing;
+    return [msg, null, null];`,
+    `    msg.topic = 'autoterm.latest';
+    msg.payload = outgoing;
+    return [msg, null, null, null];`
   );
 }
 

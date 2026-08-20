@@ -28,6 +28,32 @@ Entfernung. Er enthält nur die ausgewählte Stations-ID und den Stationsnamen.
 Nach zwölf Stunden ohne erfolgreichen Abruf wird `stale:true` veröffentlicht;
 vorhandene zukünftige Werte bleiben sichtbar.
 
+### Wettercode `ww`
+
+Die Zuordnung folgt vollständig der offiziellen DWD-Tabelle
+`Wettercode ww` (Stand der DWD-Datei: 15.03.2021) und nicht einem groben
+Zahlenbereich. Dadurch werden insbesondere Regenschauer 80/81/82 nicht als
+Schnee interpretiert. CamperControl gruppiert die aktuell von MOSMIX
+veröffentlichten Codes so:
+
+- 0 klar/keine Wolkenentwicklung; 1/2 teilweise bewölkt; 3 bewölkt
+- 45/49 Nebel beziehungsweise Eisnebel
+- 51/53/55 Sprühregen
+- 56/57 gefrierender Sprühregen; 66/67 gefrierender Regen
+- 61/63/65 Regen
+- 68/69 sowie 83/84 Schneeregen
+- 71/73/75 sowie 85/86 Schnee beziehungsweise Schneeschauer
+- 80/81/82 Regenschauer
+- 95 Gewitter mit Regen oder Schnee
+
+Für den repräsentativen Tagescode gilt die Prioritätsreihenfolge derselben
+DWD-Tabelle; die numerisch größte Kennzahl gewinnt ausdrücklich nicht. Die
+aktuelle MOSMIX-Liste enthält **keinen eigenen Hagelcode**. Falls eine spätere
+DWD-Ausgabe die üblichen defensiv unterstützten Codes 96 oder 99 liefert,
+zeigt CamperControl ein Hagelgewitter. Code 95 wird nicht als Hagel ausgegeben.
+Andere unbekannte Werte bleiben neutral `unknown`, statt einen Zustand zu
+erfinden.
+
 ## Optionale Ebbe-/Flutdaten vom BSH
 
 CamperControl verwendet ausschließlich die dokumentierte OGC-API des
@@ -70,8 +96,13 @@ Für die 24-Stunden-Kurve wird pro Rohpunkt zuerst
 Wasserstandsprognose des BSH), bei fehlendem/ungültigem Wert ausschließlich
 `curve.tidal_prediction`. `measurement` wird für die Zukunft nicht verwendet.
 Die etwa zehnminütige Rohkurve bleibt nur während des Parsens im RAM. Der Cache
-enthält höchstens 32 gleichmäßig reduzierte Punkte für 30 Stunden; veröffentlicht
-werden höchstens 25 chronologisch sortierte Punkte für jetzt bis +24 Stunden.
+enthält höchstens 145 reduzierte Punkte für 72 Stunden. Das entspricht ungefähr
+einem Halbstundenraster und hält die öffentliche 24-Stunden-Kurve auch während
+des kompletten 48-Stunden-Stale-Fensters vollständig. Dabei bleiben die beiden
+Randpunkte sowie lokale Hoch-/Niedrigwasser-Extrema erhalten. Veröffentlicht
+werden höchstens 27 chronologisch sortierte Punkte für exakt jetzt bis +24
+Stunden: bei vollständigen BSH-Daten 25 innere Kurvenpunkte plus zwei bei Bedarf
+linear interpolierte Randwerte.
 
 Alle Zeitfelder tragen laut BSH-Vertrag einen expliziten UTC-Offset. Der
 Provider übernimmt diesen Offset unverändert, normalisiert anschließend nach
@@ -97,8 +128,11 @@ UTC in seine Gerätezeitzone.
   - `station:{id,name,distanceKm}`
   - `nextHigh:{t,heightM}` und `nextLow:{t,heightM}`; beide Zeiten sind UTC,
     `heightM` darf bei einem Pegel ohne Höhenangabe `null` sein
-  - optional `curve:[{t,heightM},...]`: höchstens 25 UTC-Punkte für jetzt bis
-    +24 Stunden, chronologisch, Meter über PNP
+  - optional `curve:[{t,heightM},...]`: höchstens 27 UTC-Punkte für exakt
+    jetzt bis +24 Stunden. Das sind 25 ressourcenschonend ausgewählte
+    Kurvenpunkte plus zwei interpolierte Randpunkte; Hoch- und
+    Niedrigwasser-Extrema bleiben beim Ausdünnen erhalten. Die Werte sind
+    chronologisch und in Meter über PNP.
 
 `maxHourlyPrecipProbabilityPct` ist bewusst keine mathematische
 Tageswahrscheinlichkeit. Fehlwerte bleiben `null` und werden nie als Null
@@ -157,7 +191,8 @@ aus dem lokalen Cache gelesen.
   verarbeitet und nie auf Flash geschrieben; temporäre Cachedateien werden
   nach `os.replace()` entfernt.
 - Für BSH kommt atomar nur `bsh-tides-v1.json` hinzu (Limit 16 KiB, höchstens
-  32 zukünftige Ereignisse und 32 stündlich reduzierte Kurvenpunkte). Die
+  32 zukünftige Ereignisse und 145 auf etwa halbstündliche Abstände reduzierte
+  Kurvenpunkte für 72 Stunden). Die
   OGC-Rohkurve wird nie auf Flash geschrieben. Hits-Antworten sind auf 16 KiB,
   Stationsseiten auf 1,5 MiB je Seite/4 MiB insgesamt und der direkte Pegel auf
   512 KiB dekomprimiert begrenzt. Gzip wird mit getrenntem komprimiertem und

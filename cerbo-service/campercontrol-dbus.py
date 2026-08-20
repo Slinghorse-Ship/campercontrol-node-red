@@ -180,6 +180,9 @@ class CamperControlBridge:
         self._state_delivery_lock = threading.Lock()
         self._pending_state_delivery: tuple[str, Any] | None = None
         self._state_delivery_scheduled = False
+        self._weather_delivery_lock = threading.Lock()
+        self._pending_weather_delivery: tuple[str, Any] | None = None
+        self._weather_delivery_scheduled = False
         self._last_fragments: dict[str, str] = {}
         self._last_weather = ""
         self._last_status_update = 0
@@ -328,6 +331,45 @@ class CamperControlBridge:
             self._service["/Status/WeatherError"] = error[:256]
         return False
 
+    def _queue_weather_delivery(self, kind: str, payload: Any) -> None:
+        """Keep only the newest weather result and one GLib idle source."""
+        if kind not in ("weather", "error"):
+            raise ValueError("unknown weather delivery kind")
+        with self._weather_delivery_lock:
+            self._pending_weather_delivery = (kind, payload)
+            if self._weather_delivery_scheduled:
+                return
+            self._weather_delivery_scheduled = True
+        try:
+            self._glib.idle_add(self._drain_weather_delivery)
+        except Exception:
+            with self._weather_delivery_lock:
+                self._weather_delivery_scheduled = False
+            raise
+
+    def _drain_weather_delivery(self) -> bool:
+        with self._weather_delivery_lock:
+            delivery = self._pending_weather_delivery
+            self._pending_weather_delivery = None
+            if delivery is None:
+                self._weather_delivery_scheduled = False
+                return False
+
+        kind, payload = delivery
+        try:
+            if kind == "weather":
+                self._apply_weather(payload)
+            else:
+                self._apply_weather_error(payload)
+        except Exception:  # preserve the single source after D-Bus/cache errors
+            logging.exception("failed to publish CamperControl %s update", kind)
+
+        with self._weather_delivery_lock:
+            if self._pending_weather_delivery is not None:
+                return True
+            self._weather_delivery_scheduled = False
+            return False
+
     def _state_worker(self) -> None:
         failure_index = 0
         while not self._stop.is_set():
@@ -375,11 +417,11 @@ class CamperControlBridge:
         while not self._stop.is_set():
             try:
                 weather = self._weather.refresh()
-                self._glib.idle_add(self._apply_weather, weather)
+                self._queue_weather_delivery("weather", weather)
                 retry_index = 0
                 delay = REFRESH_SECONDS
             except Exception as error:  # provider errors must never stop the D-Bus bridge
-                self._glib.idle_add(self._apply_weather_error, f"DWD-Wetter: {error}")
+                self._queue_weather_delivery("error", f"DWD-Wetter: {error}")
                 delay = RETRY_SECONDS[min(retry_index, len(RETRY_SECONDS) - 1)]
                 retry_index += 1
             self._stop.wait(delay)

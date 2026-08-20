@@ -9,6 +9,7 @@ from unittest import mock
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "campercontrol-dbus.py"
 INSTALLER_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "install-campercontrol-dbus.sh"
+ENSURE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "ensure-campercontrol-dbus.sh"
 LOG_SCRIPT_PATHS = tuple(
     pathlib.Path(__file__).parents[1] / "cerbo-service" / name
     for name in (
@@ -96,6 +97,41 @@ class CamperControlDbusContractTest(unittest.TestCase):
 
         bridge._queue_state_delivery("state", {"ui": "new"})
         self.assertEqual(len(bridge._glib.callbacks), 2)
+
+    def test_weather_delivery_coalesces_one_thousand_updates_into_one_glib_callback(self):
+        class FakeGlib:
+            def __init__(self):
+                self.callbacks = []
+
+            def idle_add(self, callback):
+                self.callbacks.append(callback)
+                return len(self.callbacks)
+
+        bridge = MODULE.CamperControlBridge.__new__(MODULE.CamperControlBridge)
+        bridge._glib = FakeGlib()
+        bridge._weather_delivery_lock = MODULE.threading.Lock()
+        bridge._pending_weather_delivery = None
+        bridge._weather_delivery_scheduled = False
+        bridge._apply_weather = mock.Mock(return_value=False)
+        bridge._apply_weather_error = mock.Mock(return_value=False)
+
+        for index in range(999):
+            bridge._queue_weather_delivery("weather", {"sequence": index})
+        bridge._queue_weather_delivery("error", "latest")
+
+        self.assertEqual(len(bridge._glib.callbacks), 1)
+        self.assertFalse(bridge._glib.callbacks[0]())
+        bridge._apply_weather.assert_not_called()
+        bridge._apply_weather_error.assert_called_once_with("latest")
+        self.assertFalse(bridge._weather_delivery_scheduled)
+
+    def test_install_and_ensure_require_the_bounded_device_http_helper(self):
+        installer = INSTALLER_PATH.read_text(encoding="utf-8")
+        ensure = ENSURE_PATH.read_text(encoding="utf-8")
+        self.assertIn('[ -f "$BASE/device-http-bounded.py" ] || exit 1', installer)
+        self.assertIn('chmod 0755 "$BASE/device-http-bounded.py"', installer)
+        self.assertIn('DEVICE_HTTP=/data/campercontrol/service/device-http-bounded.py', ensure)
+        self.assertIn('[ -x "$DEVICE_HTTP" ] || exit 1', ensure)
 
     def test_maintenance_logs_are_overwritten_on_every_invocation(self):
         for script_path in LOG_SCRIPT_PATHS:
