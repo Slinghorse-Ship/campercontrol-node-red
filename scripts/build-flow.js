@@ -60,7 +60,7 @@ const inputNode = (id, name, pathValue, type, y, topicId) => ({
   serviceObj: { service: 'com.victronenergy.platform', name: 'Venus platform' },
   pathObj: { path: pathValue, type, name: pathValue },
   name,
-  onlyChanges: false,
+  onlyChanges: true,
   roundValues: '3',
   x: 230,
   y,
@@ -112,31 +112,104 @@ snapshotFallback.onceDelay = 5;
 
 // Node-RED may persist context values to disk. Native Timeout objects are
 // circular, non-serialisable handles and must therefore never be stored in
-// context/flow/global. The two burst coalescers use core Trigger nodes instead:
-// the STAR-Power path is a trailing-edge debounce, while all other sensor
-// updates retain the previous leading-edge 150 ms throttle behaviour.
-const configureCoalescingTrigger = (id, name, durationMs, extend) => {
+// context/flow/global. A 100/150 ms Trigger still allowed the large snapshot
+// aggregator to run 6-10 times per second under a continuous Victron event
+// stream. Both hot feedback paths therefore use the core Delay node as a
+// one-message-per-second rate gate and drop intermediate ticks. The
+// normalisers have already stored the newest state before this point, so the
+// next emitted tick always samples current values without queue growth.
+const configureSnapshotRateLimit = (id, name, rate = '1') => {
   const node = get(id);
-  for (const key of ['func', 'timeout', 'noerr', 'initialize', 'finalize', 'libs']) delete node[key];
+  for (const key of ['func', 'noerr', 'initialize', 'finalize', 'libs', 'op1', 'op2', 'op1type', 'op2type', 'duration', 'extend', 'overrideDelay', 'reset', 'bytopic', 'topic']) delete node[key];
   Object.assign(node, {
-    type: 'trigger',
+    type: 'delay',
     name,
-    op1: '',
-    op2: '',
-    op1type: 'nul',
-    op2type: 'str',
-    duration: String(durationMs),
-    extend,
-    overrideDelay: false,
-    units: 'ms',
-    reset: '',
-    bytopic: 'all',
-    topic: 'topic',
+    pauseType: 'rate',
+    timeout: '1',
+    timeoutUnits: 'seconds',
+    rate,
+    nbRateUnits: '1',
+    rateUnits: 'second',
+    randomFirst: '1',
+    randomLast: '5',
+    randomUnits: 'seconds',
+    drop: true,
+    allowrate: false,
     outputs: 1
   });
 };
-configureCoalescingTrigger('d36a1adac492ce3e', 'STAR-Power Rückmeldung nach 100 ms bündeln', 100, true);
-configureCoalescingTrigger('cff2c4d32221ccd8', 'Sensor-Bursts auf 150 ms bündeln', 150, false);
+configureSnapshotRateLimit('d36a1adac492ce3e', 'STAR-Power Snapshot maximal 1/s');
+configureSnapshotRateLimit('cff2c4d32221ccd8', 'Gesamt-Snapshot maximal 2/s', '2');
+
+// Dieses Fahrzeug besitzt keinen Abwassertanksensor. Die beiden alten,
+// ungenutzten Eingänge werden count-neutral durch den zentralen Wetterpfad
+// ersetzt. Der Provider gehört dem CamperControl-D-Bus-Dienst; Node-RED liest
+// ausschließlich dessen kompakten, changed-only JSON-Zustand.
+removeIds(['ad733d7d09846816', 'feb53f815117a12b', 'weather_state_in', 'weather_state_validate']);
+add({
+  id: 'weather_state_in', type: 'victron-input-custom', z: tabId,
+  service: 'com.victronenergy.campercontrol/0', path: '/State/Weather',
+  serviceObj: { service: 'com.victronenergy.campercontrol/0', name: 'CamperControl bridge' },
+  pathObj: { path: '/State/Weather', type: 'string', name: '/State/Weather' },
+  name: 'Wetter · CamperControl D-Bus', onlyChanges: true, roundValues: '3',
+  x: 230, y: 3420, wires: [['weather_state_validate']]
+});
+add({
+  id: 'weather_state_validate', type: 'function', z: tabId,
+  name: 'Wetter-JSON prüfen & übernehmen', outputs: 1, timeout: 0, noerr: 0,
+  initialize: '', finalize: '', libs: [], x: 555, y: 3420,
+  wires: [['ada9353cc6ea4a4c']],
+  func: String.raw`
+const MAX_BYTES = 16 * 1024;
+const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+const unwrap = value => value && typeof value === 'object' && own(value, 'value') ? value.value : value;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const string = (value, max, optional = false) => optional && value == null ? null : (typeof value === 'string' && value.length > 0 && value.length <= max ? value : undefined);
+const number = (value, min, max) => value == null ? null : (typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : undefined);
+const required = (object, key, parser) => own(object, key) ? parser(object[key]) : undefined;
+const timestamp = (value, optional = false) => {
+    if (optional && value == null) return null;
+    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
+};
+const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value + 'T00:00:00Z')) ? value : undefined;
+const reject = reason => { node.status({ fill: 'red', shape: 'ring', text: String(reason).slice(0, 32) }); return null; };
+let raw = unwrap(msg.payload);
+if (Buffer.isBuffer(raw)) raw = raw.toString('utf8');
+if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > MAX_BYTES) return reject('JSON fehlt oder >16 KiB');
+let source;
+try { source = JSON.parse(raw); } catch (error) { return reject('ungültiges JSON'); }
+if (!object(source) || source.schema !== 1 || !Array.isArray(source.hourly) || source.hourly.length > 48 || !Array.isArray(source.daily) || source.daily.length > 6) return reject('Schema oder Länge ungültig');
+if (!object(source.station) || !object(source.sun)) return reject('Metadaten fehlen');
+const station = { id: required(source.station, 'id', value => string(value, 32)), name: required(source.station, 'name', value => string(value, 160)) };
+const sun = { date: required(source.sun, 'date', date), riseUtc: required(source.sun, 'riseUtc', value => timestamp(value, true)), setUtc: required(source.sun, 'setUtc', value => timestamp(value, true)), origin: required(source.sun, 'origin', value => string(value, 32)) };
+const hourly = source.hourly.map(item => object(item) ? {
+    t: required(item, 't', timestamp), tempC: required(item, 'tempC', value => number(value, -90, 70)), precipProbabilityPct: required(item, 'precipProbabilityPct', value => number(value, 0, 100)),
+    precipMm: required(item, 'precipMm', value => number(value, 0, 500)), ww: required(item, 'ww', value => number(value, 0, 999)), icon: required(item, 'icon', value => string(value, 32)),
+    windKmh: required(item, 'windKmh', value => number(value, 0, 500)), windDeg: required(item, 'windDeg', value => number(value, 0, 360)), gustKmh: required(item, 'gustKmh', value => number(value, 0, 500))
+} : null);
+const daily = source.daily.map(item => object(item) ? {
+    date: required(item, 'date', date), minC: required(item, 'minC', value => number(value, -90, 70)), maxC: required(item, 'maxC', value => number(value, -90, 70)), precipMm: required(item, 'precipMm', value => number(value, 0, 5000)),
+    maxHourlyPrecipProbabilityPct: required(item, 'maxHourlyPrecipProbabilityPct', value => number(value, 0, 100)), ww: required(item, 'ww', value => number(value, 0, 999)), icon: required(item, 'icon', value => string(value, 32)),
+    windMaxKmh: required(item, 'windMaxKmh', value => number(value, 0, 500)), gustMaxKmh: required(item, 'gustMaxKmh', value => number(value, 0, 500)), riseUtc: required(item, 'riseUtc', value => timestamp(value, true)), setUtc: required(item, 'setUtc', value => timestamp(value, true))
+} : null);
+const validValues = value => object(value) && !Object.values(value).some(item => typeof item === 'undefined');
+if (!validValues(station) || !validValues(sun) || !hourly.every(validValues) || !daily.every(validValues)) return reject('Wetterfeld ungültig');
+const weather = {
+    schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)), station,
+    modelRunUtc: required(source, 'modelRunUtc', value => timestamp(value, true)), fetchedAtUtc: required(source, 'fetchedAtUtc', timestamp), stale: source.stale,
+    timezone: required(source, 'timezone', value => string(value, 64)), sun, hourly, daily
+};
+if (!validValues(weather) || typeof weather.stale !== 'boolean') return reject('Metadaten ungültig');
+const canonical = JSON.stringify(weather);
+if (Buffer.byteLength(canonical, 'utf8') > MAX_BYTES) return reject('normalisiert >16 KiB');
+let previousJson = '';
+try { const previous = flow.get('camperWeather'); previousJson = previous ? JSON.stringify(previous) : ''; } catch (error) {}
+if (previousJson === canonical) return null;
+flow.set('camperWeather', weather);
+node.status({ fill: weather.stale ? 'yellow' : 'green', shape: 'dot', text: hourly.length + ' h · ' + daily.length + ' d' });
+return { topic: 'weather', payload: weather };
+`
+});
 
 // Ruuvi wird nicht gesucht. Der vorhandene Sensor FB31 ist fest und nativ dem
 // Victron-Temperaturdienst /24 als Deckenfühler zugeordnet. Ein Bodenfühler
@@ -591,7 +664,11 @@ const parseJson = value => {
 const raw = flow.get('camperExternalWifiRaw') || {};
 const field = String(msg.topic || '').split('.').pop();
 if (['services', 'enabled', 'state', 'signal'].includes(field)) {
-    raw[field] = unwrap(msg.payload);
+    const next = unwrap(msg.payload);
+    let encoded = '';
+    try { encoded = typeof next === 'string' ? next : JSON.stringify(next); } catch (error) { return null; }
+    if (Buffer.byteLength(encoded, 'utf8') > 64 * 1024) return null;
+    raw[field] = next;
     raw.receivedAt = Date.now();
 }
 flow.set('camperExternalWifiRaw', raw);
@@ -605,6 +682,7 @@ if (Array.isArray(wifiSource)) entries = wifiSource.map((item, index) => [String
 else if (Array.isArray(wifiSource.Services)) entries = wifiSource.Services.map((item, index) => [String(item && (item.Service || item.service) || index), item]);
 else if (Array.isArray(wifiSource.services)) entries = wifiSource.services.map((item, index) => [String(item && (item.Service || item.service) || index), item]);
 else if (wifiSource && typeof wifiSource === 'object') entries = Object.entries(wifiSource);
+entries = entries.slice(0, 64);
 const pick = (object, keys, fallback = '') => {
     for (const key of keys) if (object && object[key] != null) return unwrap(object[key]);
     return fallback;
@@ -613,19 +691,19 @@ const bool = value => value === true || value === 1 || value === '1' || String(v
 const networks = [];
 for (const [entryKey, value] of entries) {
     if (!value || typeof value !== 'object') continue;
-    const service = String(pick(value, ['Service', 'service', 'Path', 'path'], entryKey));
-    const type = String(pick(value, ['Type', 'type', 'Technology', 'technology'], '')).toLowerCase();
+    const service = String(pick(value, ['Service', 'service', 'Path', 'path'], entryKey)).slice(0, 512);
+    const type = String(pick(value, ['Type', 'type', 'Technology', 'technology'], '')).toLowerCase().slice(0, 32);
     if (type && !type.includes('wifi') && !type.includes('wireless')) continue;
     if (!type && !/wifi|wireless|wlan/i.test(service)) continue;
-    const ssid = String(pick(value, ['Name', 'name', 'SSID', 'ssid'], /^\/net\//.test(entryKey) ? '' : entryKey)).trim();
+    const ssid = String(pick(value, ['Name', 'name', 'SSID', 'ssid'], /^\/net\//.test(entryKey) ? '' : entryKey)).trim().slice(0, 128);
     if (!ssid) continue;
-    const state = String(pick(value, ['State', 'state'], '')).toLowerCase();
+    const state = String(pick(value, ['State', 'state'], '')).toLowerCase().slice(0, 32);
     const securedRaw = pick(value, ['Secured', 'secured'], null);
     const securityRaw = pick(value, ['Security', 'security'], '');
     const security = Array.isArray(securityRaw) ? securityRaw.join(',') : String(securityRaw || '');
     const strengthValue = Number(pick(value, ['Strength', 'strength', 'SignalStrength', 'signalStrength'], NaN));
     const ipv4 = pick(value, ['Ipv4', 'IPv4', 'ipv4'], {});
-    const address = String(pick(ipv4, ['Address', 'address'], pick(value, ['Address', 'address'], '')) || '');
+    const address = String(pick(ipv4, ['Address', 'address'], pick(value, ['Address', 'address'], '')) || '').slice(0, 64);
     networks.push({
         ssid,
         service,
@@ -1016,8 +1094,7 @@ const cleanEmbeddedDefaults = source => source.replace(
     value.version = 5;
     value.ui = {
       quickAccessIds: genericQuick || legacyQuick || genericQuickFallback,
-      externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false),
-      designVersion: value.ui && value.ui.designVersion === 'v1' ? 'v1' : 'v2'
+      externalWifiTileEnabled: !(value.ui && value.ui.externalWifiTileEnabled === false)
     };
     delete value.security;
     value.access = { scope: 'local-network', unrestricted: true };
@@ -1042,10 +1119,18 @@ const cleanEmbeddedDefaults = source => source.replace(
 // store. Older flow revisions addressed a non-existent store named "file",
 // which caused warnings and repeated fallback writes. Preserve persistence by
 // using the configured default store without naming an unavailable backend.
-const useDefaultContextStore = source => source.replace(
-  /(\b(?:context|flow|global)\.(?:get|set)\([^\n;]*?),\s*(['"])file\2\s*\)/g,
-  '$1)'
-);
+const useDefaultContextStore = source => source
+  .replace(
+    /(\b(?:context|flow|global)\.(?:get|set)\([^\n;]*?),\s*(['"])file\2\s*\)/g,
+    '$1)'
+  )
+  // Nach dem Entfernen des nicht vorhandenen Stores darf der frühere
+  // Fallback nicht denselben persistenten Default-Schreibvorgang ein zweites
+  // Mal ausführen. Das vermeidet doppelte Flash-Writes pro Änderung.
+  .replace(
+    /^([ \t]*)(context|flow|global)\.set\(([^;\r\n]+)\);\r?\n[ \t]*try \{ \2\.set\(\3\); \} catch \([^\r\n)]+\) \{\}\r?$/gm,
+    '$1$2.set($3);'
+  );
 
 settings.func = cleanEmbeddedDefaults(settings.func)
   .replace(
@@ -1077,9 +1162,16 @@ settings.func = cleanEmbeddedDefaults(settings.func)
     "        cfg = sanitize(action.backup.config);\n        changed = true;\n        networkChanged = true;\n        notice = 'Konfiguration wiederhergestellt.';"
   )
   .replace(
-    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };",
-    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' };"
+    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' };",
+    "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };"
   );
+
+if (!settings.func.includes('delete source.ui.designVersion;')) {
+  settings.func = settings.func.replace(
+    '    delete source.ui.quickAccessLightIds;',
+    '    delete source.ui.quickAccessLightIds;\n    delete source.ui.designVersion;'
+  );
+}
 
 if (!settings.func.includes('const sourceVersion = Number(value && value.version || 0);')) {
   settings.func = replaceOnce(
@@ -1182,6 +1274,52 @@ commandRouter.func = cleanEmbeddedDefaults(commandRouter.func)
   .replace(
     'for (let index = 0; index < 4; index++) if (!output[index].length) output[index] = null;',
     'for (const index of [0, 1, 2, 3, 9, 11]) if (!output[index].length) output[index] = null;'
+  );
+
+// VRM darf den eigenen Internet-Uplink niemals abschalten. Die Bridge gibt
+// den streng validierten Ursprung weiter; lokale HTTP-/SYNC-Befehle dürfen
+// weiterhin ohne origin eintreffen. Der Schutz sitzt vor jeder Dispatch- oder
+// Hardware-Route und lässt das Einschalten aus VRM ausdrücklich zu.
+if (!commandRouter.func.includes('remote_link_protection')) {
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    "const action = String(request.action || '');\nconst now = Date.now();",
+    `const action = String(request.action || '');
+const origin = String(request.origin || '');
+const remoteLinkProtection = origin === 'vrm' && target === 'starpower' && action === 'set' && Number(request.channel) === 5 && (request.value === false || request.value === 0);
+const now = Date.now();`,
+    'VRM-Linkschutz-Prüfung'
+  );
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    "let commands = flow.get('camperCommands') || [];\nconst existing = commands.find(item => item.requestId === requestId);",
+    "let commands = flow.get('camperCommands') || [];\nconst commandsBefore = JSON.stringify(commands);\nconst existing = commands.find(item => item.requestId === requestId);",
+    'Kommandohistorie changed-only vorbereiten'
+  );
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    "if (target === 'service') {",
+    "if (remoteLinkProtection) { accepted = false; error = 'remote_link_protection'; }\nelse if (target === 'service') {",
+    'VRM-Linkschutz vor allen Routen'
+  );
+  commandRouter.func = commandRouter.func
+    .replace(
+      "source: msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard'), error: ''",
+      "source: origin || (msg._session ? 'sync3-websocket' : (msg.req ? 'http' : 'dashboard')), error: ''"
+    )
+    .replace(
+      "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nflow.set('camperCommands', commands);",
+      "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nif (JSON.stringify(commands) !== commandsBefore) flow.set('camperCommands', commands);"
+    );
+}
+commandRouter.func = commandRouter.func
+  .replace(
+    "(request.value === false || Number(request.value) === 0)",
+    "(request.value === false || request.value === 0)"
+  )
+  .replace(
+    "source: msg.req ? 'http' : (msg._session ? 'sync3-websocket' : 'dashboard'), error: '', childIds",
+    "source: origin || (msg.req ? 'http' : (msg._session ? 'sync3-websocket' : 'dashboard')), error: '', childIds"
   );
 
 state.func = cleanEmbeddedDefaults(state.func)
@@ -1317,9 +1455,29 @@ if (state.func.includes('ui: { quickAccessLightIds:')) {
   );
 }
 state.func = state.func.replace(
-  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
-  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' },"
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' },",
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
 );
+
+if (!state.func.includes("const weatherStored = flow.get('camperWeather');")) {
+  state.func = replaceOnce(
+    state.func,
+    'const snapshot = {',
+    `const weatherStored = flow.get('camperWeather');
+const weather = weatherStored && typeof weatherStored === 'object' && weatherStored.schema === 1 ? weatherStored : null;
+
+const snapshot = {`,
+    'Validiertes Wetter im Zustandssnapshot'
+  );
+}
+if (!state.func.includes('\n    weather,\n')) {
+  state.func = replaceOnce(
+    state.func,
+    "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
+    "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },\n    weather,",
+    'Wetterfeld im Zustandssnapshot'
+  );
+}
 
 const settingsUi = get('aec5cc044fa2963f');
 settingsUi.format = String(settingsUi.format || '')
@@ -1345,27 +1503,11 @@ settingsUi.format = String(settingsUi.format || '')
   .replace(/\.security p\{/g, '.local-access p{')
   .replace(/\.security label\{/g, '.local-access label{');
 
-if (!settingsUi.format.includes('class="design-picker"')) {
-  settingsUi.format = replaceOnce(
-    settingsUi.format,
-    '  <section>\n    <h2>System</h2>',
-    `  <section class="design-choice"><h2>Oberfläche</h2><p>Design V1 und V2 greifen auf dieselben Live-Zustände und dieselben validierten CamperControl-Befehle zu.</p><div class="design-picker"><button :class="{active:cfg.ui&&cfg.ui.designVersion==='v1'}" @click="selectDesign('v1')"><b>DESIGN V1</b><span>Bewährte CamperControl-Ansicht</span></button><button :class="{active:!cfg.ui||cfg.ui.designVersion!=='v1'}" @click="selectDesign('v2')"><b>DESIGN V2</b><span>Transit Horizon</span></button></div></section>\n  <section>\n    <h2>System</h2>`,
-    'Designauswahl in den Einstellungen'
-  );
-  settingsUi.format = replaceOnce(
-    settingsUi.format,
-    "history:{},access:{}},persistent:false",
-    "history:{},access:{},ui:{designVersion:'v2'}},persistent:false",
-    'UI-Default der Einstellungsseite'
-  );
-  settingsUi.format = replaceOnce(
-    settingsUi.format,
-    "methods:{go(p){window.location.href='/dashboard'+p},sendAction(a)",
-    "methods:{go(p){window.location.href='/dashboard'+p},selectDesign(v){if(!['v1','v2'].includes(v))return;this.cfg.ui=Object.assign({},this.cfg.ui||{},{designVersion:v});this.patch({ui:{designVersion:v}})},sendAction(a)",
-    'Designauswahl speichern'
-  );
-  settingsUi.format += '<style id="settings-selectable-designs-v2">.design-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.design-picker button{min-height:78px;display:grid;align-content:center;gap:5px;text-align:left}.design-picker button b,.design-picker button span{display:block}.design-picker button span{color:#9eabb5;font-size:11px}.design-picker button.active{border-color:#37bdf5;background:#153b50;box-shadow:inset 0 0 0 1px #37bdf555}.design-picker button.active b{color:#6bd2ff}@media(max-width:760px){.design-picker{grid-template-columns:1fr}}</style>';
-}
+settingsUi.format = settingsUi.format
+  .replace(/\s*<section class="design-choice">[\s\S]*?<\/section>\s*(?=<section>\s*<h2>System<\/h2>)/, '\n  ')
+  .replace(",selectDesign(v){if(!['v1','v2'].includes(v))return;this.cfg.ui=Object.assign({},this.cfg.ui||{},{designVersion:v});this.patch({ui:{designVersion:v}})}", '')
+  .replace(",ui:{designVersion:'v2'}", '')
+  .replace(/<style id="settings-selectable-designs-v2">[\s\S]*?<\/style>/, '');
 
 for (const node of flows) {
   for (const field of ['func', 'initialize', 'finalize']) {
@@ -1375,12 +1517,244 @@ for (const node of flows) {
   }
 }
 
+// Nach der Umstellung auf den persistenten Default-Store sind die früheren
+// Store-Fallbackzweige nicht nur überflüssig, sondern konnten denselben Wert
+// zweimal markieren. AUTOTERM und Settings verwenden deshalb genau einen
+// Default-Store-Zugriff und schreiben Konfiguration ausschließlich bei einer
+// echten Änderung/Migration.
+const autotermController = get('12f9ef01215ad8d3');
+autotermController.func = autotermController.func
+  .replace(
+    "let persistentStore = 'file';\nlet saved = {};\ntry {\n    saved = flow.get('autotermPersistent') || {};\n} catch (error) {\n    persistentStore = null;\n    saved = flow.get('autotermPersistent') || {};\n}",
+    "const saved = flow.get('autotermPersistent') || {};"
+  )
+  .replace(
+    "    try {\n        if (persistentStore) flow.set('autotermPersistent', persistent);\n        else flow.set('autotermPersistent', persistent);\n    } catch (error) {\n        persistentStore = null;\n        flow.set('autotermPersistent', persistent);\n        st.storageError = String(error.message || error);\n    }\n    flow.set('_autotermPersistentJson', persistentJson);\n}\nst.storagePersistent = persistentStore === 'file';\nif (st.storagePersistent) delete st.storageError;",
+    "    flow.set('autotermPersistent', persistent);\n    flow.set('_autotermPersistentJson', persistentJson);\n}\nst.storagePersistent = true;\ndelete st.storageError;"
+  );
+
+settings.func = settings.func
+  .replace(
+    "let persistent = true;\nlet stored = {};\ntry { stored = flow.get('camperConfig') || {}; }\ncatch (error) { persistent = false; stored = flow.get('camperConfig') || {}; }",
+    "const persistent = true;\nconst stored = flow.get('camperConfig') || {};"
+  )
+  .replace(
+    "const persist = () => {\n    flow.set('camperConfig', cfg);\n    try {\n        if (persistent) flow.set('camperConfig', cfg);\n    } catch (error) {\n        persistent = false;\n        flow.set('camperConfig', cfg);\n    }\n};",
+    "const persist = () => flow.set('camperConfig', cfg);"
+  )
+  .replace("\nelse flow.set('camperConfig', cfg);", '');
+
+// Der große Aggregator läuft maximal zweimal pro Sekunde. Dennoch darf er den
+// persistenten Default-Context nicht bei jedem Lauf mit unveränderten Events,
+// Historie, Kommandos, Clients oder einer zweiten globalen Snapshot-Kopie
+// markieren. Nur der aktuelle API-Snapshot selbst bleibt ein notwendiger
+// Laufzeit-Write; alle übrigen Sammlungen werden changed-only geschrieben.
+state.func = state.func
+  .replace(
+    "const starpowerCfg = (() => {\n    try { return flow.get('starpowerConfig') || {}; }\n    catch (error) { return flow.get('starpowerConfig') || {}; }\n})();",
+    "const starpowerCfg = flow.get('starpowerConfig') || {};"
+  )
+  .replace(
+    "let events = flow.get('camperEvents');\nif (!Array.isArray(events)) {\n    try { events = flow.get('camperEvents') || []; }\n    catch (error) { events = []; }\n}\nflow.set('camperEvents', events);",
+    "let events = flow.get('camperEvents');\nif (!Array.isArray(events)) events = [];"
+  )
+  .replace(
+    "let history = flow.get('camperHistory');\nif (!history || !Array.isArray(history.minute)) {\n    try { history = flow.get('camperHistory') || {}; }\n    catch (error) { history = {}; }\n}",
+    "let history = flow.get('camperHistory');\nif (!history || !Array.isArray(history.minute)) history = {};"
+  )
+  .replace(
+    "sample(history.daily, 86400000, Number(cfg.history.dailyDays || 730) * 86400000);\nflow.set('camperHistory', history);",
+    "sample(history.daily, 86400000, Number(cfg.history.dailyDays || 730) * 86400000);"
+  )
+  .replace(
+    "flow.set('camperActiveAlertIds', currentAlerts);",
+    "if (JSON.stringify(currentAlerts) !== JSON.stringify(previousAlerts)) flow.set('camperActiveAlertIds', currentAlerts);"
+  )
+  .replace(
+    "let deviceStats = flow.get('camperDeviceStats') || {};",
+    "let deviceStats = flow.get('camperDeviceStats') || {};\nconst deviceStatsBefore = JSON.stringify(deviceStats);"
+  )
+  .replace(
+    "flow.set('camperDeviceStats', deviceStats);",
+    "if (JSON.stringify(deviceStats) !== deviceStatsBefore) flow.set('camperDeviceStats', deviceStats);"
+  )
+  .replace(
+    "    sequence: Number(flow.get('camperSequence') || 0) + 1,",
+    "    sequence: Number((flow.get('camperSnapshot') || {}).sequence || 0) + 1,"
+  )
+  .replace("flow.set('camperSequence', snapshot.sequence);\n", '')
+  .replace("global.set('camper.snapshot', snapshot);\n", '')
+  .replace(
+    "const clients = flow.get('camperWsClients') || {};\nconst messages = [];",
+    "const clients = flow.get('camperWsClients') || {};\nlet clientsChanged = false;\nconst messages = [];"
+  )
+  .replace(
+    "        delete clients[id];\n        continue;",
+    "        delete clients[id];\n        clientsChanged = true;\n        continue;"
+  )
+  .replace(
+    "flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];",
+    "if (clientsChanged) flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];"
+  );
+
+// Die Buildquelle ist selbst der jeweils zuletzt generierte Master. Diese
+// Normalisierung hält die changed-only-Guards deshalb auch bei wiederholten
+// Builds exakt einmal vorhanden.
+state.func = state.func
+  .replace(/(?:const deviceStatsBefore = JSON\.stringify\(deviceStats\);\n)+/g, 'const deviceStatsBefore = JSON.stringify(deviceStats);\n')
+  .replace(/(?:if \(JSON\.stringify\(currentAlerts\) !== JSON\.stringify\(previousAlerts\)\) )+flow\.set\('camperActiveAlertIds', currentAlerts\);/g, "if (JSON.stringify(currentAlerts) !== JSON.stringify(previousAlerts)) flow.set('camperActiveAlertIds', currentAlerts);")
+  .replace(/(?:if \(JSON\.stringify\(deviceStats\) !== deviceStatsBefore\) )+flow\.set\('camperDeviceStats', deviceStats\);/g, "if (JSON.stringify(deviceStats) !== deviceStatsBefore) flow.set('camperDeviceStats', deviceStats);")
+  .replace(/(?:if \(clientsChanged\) )+flow\.set\('camperWsClients', clients\);/g, "if (clientsChanged) flow.set('camperWsClients', clients);");
+
+// Der vollständige Snapshot ist auf dem Cerbo die mit Abstand größte
+// Context-Struktur. Selbst der gemeinsame 2-Hz-Gate darf den persistenten
+// localfilesystem-Store nicht für identische Zustände markieren. Sequenz und
+// Zeitstempel beschreiben deshalb die letzte echte Inhaltsänderung und werden
+// beim Vergleich bewusst ausgeblendet.
+if (!state.func.includes('const snapshotChanged = !previousSnapshot')) {
+  state.func = replaceOnce(
+    state.func,
+    "flow.set('camperSnapshot', snapshot);\n\nconst clients = flow.get('camperWsClients') || {};",
+    `const previousSnapshot = flow.get('camperSnapshot');
+const comparableSnapshot = Object.assign({}, snapshot);
+delete comparableSnapshot.sequence;
+delete comparableSnapshot.timestamp;
+const previousComparable = previousSnapshot ? Object.assign({}, previousSnapshot) : null;
+if (previousComparable) {
+    delete previousComparable.sequence;
+    delete previousComparable.timestamp;
+}
+const snapshotChanged = !previousSnapshot || JSON.stringify(comparableSnapshot) !== JSON.stringify(previousComparable);
+if (snapshotChanged) flow.set('camperSnapshot', snapshot);
+
+const clients = flow.get('camperWsClients') || {};`,
+    'Snapshot nur bei Inhaltsänderung persistieren'
+  );
+}
+if (!state.func.includes('const MAX_SNAPSHOT_BYTES = 256 * 1024;')) {
+  state.func = replaceOnce(
+    state.func,
+    "if (eventsChanged) {\n    events = events.slice(-500);",
+    `const MAX_SNAPSHOT_BYTES = 256 * 1024;
+if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > MAX_SNAPSHOT_BYTES) {
+    node.error('snapshot_too_large');
+    return null;
+}
+
+const retainedEvents = events.slice(-500);
+if (retainedEvents.length !== events.length) eventsChanged = true;
+events = retainedEvents;
+if (eventsChanged) {`,
+    'Snapshot- und Event-Retention begrenzen'
+  );
+}
+state.func = state.func
+  .replace(
+    "        messages.push({ _session: client.session, payload: JSON.stringify({ type: 'state', data: snapshot }) });",
+    "        if (snapshotChanged) messages.push({ _session: client.session, payload: JSON.stringify({ type: 'state', data: snapshot }) });"
+  )
+  .replace(
+    "if (clientsChanged) flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];",
+    "if (clientsChanged) flow.set('camperWsClients', clients);\nif (!snapshotChanged) return null;\nreturn [{ payload: snapshot }, messages];"
+  )
+  .replace(/(?:if \(!snapshotChanged\) return null;\n)+/g, 'if (!snapshotChanged) return null;\n');
+
+if (!state.func.includes('let commandsChanged = false;')) {
+  state.func = replaceOnce(
+    state.func,
+    "let commands = flow.get('camperCommands') || [];\nconst commandMatch = command => {",
+    "let commands = flow.get('camperCommands') || [];\nlet commandsChanged = false;\nconst commandMatch = command => {",
+    'Changed-only-Kommandozustand'
+  )
+    .replace("    if (matched.ok) {\n        command.status", "    if (matched.ok) {\n        commandsChanged = true;\n        command.status")
+    .replace("    } else if (matched.failed) {\n        command.status", "    } else if (matched.failed) {\n        commandsChanged = true;\n        command.status")
+    .replace("    } else if (now >= Number(command.deadlineAt || 0)) {\n        command.status", "    } else if (now >= Number(command.deadlineAt || 0)) {\n        commandsChanged = true;\n        command.status");
+  state.func = replaceOnce(
+    state.func,
+    "commands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nflow.set('camperCommands', commands);",
+    "const retainedCommands = commands.slice(-Math.max(10, Number(cfg.commands && cfg.commands.retainCount || 40)));\nif (retainedCommands.length !== commands.length) commandsChanged = true;\ncommands = retainedCommands;\nif (commandsChanged) flow.set('camperCommands', commands);",
+    'Begrenzte Kommandos changed-only speichern'
+  );
+}
+
+const indevoltDiscovery = get('d92d04ca2b1964f9');
+if (!indevoltDiscovery.func.includes('scan.results = scan.results.slice(-8);')) {
+  indevoltDiscovery.func = replaceOnce(
+    indevoltDiscovery.func,
+    'if (index >= 0) scan.results[index] = result; else scan.results.push(result);',
+    'if (index >= 0) scan.results[index] = result; else scan.results.push(result);\nscan.results = scan.results.slice(-8);',
+    'Begrenzte INDEVOLT-Discovery-Ergebnisse'
+  );
+}
+
+// WebSocket-Sessions sind flüchtig und werden bereits nach 65 s ohne
+// Heartbeat entfernt. Zusätzlich verhindert das harte 32-Client-Limit, dass
+// ein lokaler fehlerhafter Browser beliebig viele Context-Einträge anlegt.
+if (!commandRouter.func.includes('const saveClients = () => {')) {
+  commandRouter.func = commandRouter.func.replace(/flow\.set\('camperWsClients', clients\);/g, 'saveClients();');
+  commandRouter.func = replaceOnce(
+    commandRouter.func,
+    "const clients = flow.get('camperWsClients') || {};",
+    `const clients = flow.get('camperWsClients') || {};
+const saveClients = () => {
+    const ids = Object.keys(clients).sort((a, b) => Number(clients[b] && clients[b].lastSeen || 0) - Number(clients[a] && clients[a].lastSeen || 0));
+    for (const staleId of ids.slice(32)) delete clients[staleId];
+    flow.set('camperWsClients', clients);
+};`,
+    'Begrenzte WebSocket-Clientliste'
+  );
+}
+
+// Diese globalen Spiegel wurden im gesamten Master nicht gelesen. Die
+// kanonischen flow-Zustände bleiben bestehen; das Entfernen spart identische
+// persistente Kopien ohne einen Daten- oder Commandpfad zu verändern.
+for (const node of flows) {
+  if (typeof node.func === 'string') {
+    node.func = node.func
+      .replace("global.set('camper.indevolt', state);\n", '')
+      .replace("global.set('camper.starlink', state);\n", '');
+  }
+}
+
+// Sämtliche Snapshot-Anlässe laufen durch genau einen gemeinsamen Core-Gate.
+// STAR-Power behält zusätzlich seinen 1-Hz-Vorgate. Die Normalisierer legen
+// den jeweils neuesten Zustand vor dem Gate ab; Drop kann daher niemals einen
+// neueren Sensorwert verlieren. Damit ist auch bei kombinierten D-Bus-,
+// Settings-, Command- und Wetterbursts die Aggregator-Rate hart auf 2/s
+// begrenzt, ohne Function-Timer oder persistente Handles.
+const aggregateGateId = 'cff2c4d32221ccd8';
+const aggregateId = 'ada9353cc6ea4a4c';
+for (const node of flows) {
+  if (node.id === aggregateGateId || !Array.isArray(node.wires)) continue;
+  node.wires = node.wires.map(output => Array.isArray(output)
+    ? [...new Set(output.map(target => target === aggregateId ? aggregateGateId : target))]
+    : output);
+}
+get(aggregateGateId).wires = [[aggregateId]];
+
+// Die zuvor benannten File-Store-Fallbacks sind nun Default-Store-Zugriffe.
+// Entferne eventuell daraus entstandene unmittelbare Doppelwrites auch aus
+// dem Command-Router und den übrigen Functions.
+for (const node of flows) {
+  for (const field of ['func', 'initialize', 'finalize']) {
+    if (typeof node[field] === 'string') node[field] = useDefaultContextStore(node[field]);
+  }
+}
+
 const namedFileStoreUsers = flows.filter(node => ['func', 'initialize', 'finalize'].some(field =>
   typeof node[field] === 'string'
   && /\b(?:context|flow|global)\.(?:get|set)\([^\n;]*,\s*(['"])file\1\s*\)/.test(node[field])
 ));
 if (namedFileStoreUsers.length) {
   throw new Error('Unbekannter Context-Store file verbleibt in Nodes: ' + namedFileStoreUsers.map(node => node.id).join(', '));
+}
+
+const duplicateContextWrites = flows.filter(node => ['func', 'initialize', 'finalize'].some(field =>
+  typeof node[field] === 'string'
+  && /^(?:[ \t]*)(context|flow|global)\.set\(([^;\r\n]+)\);\r?\n[ \t]*(?:try \{ )?\1\.set\(\2\);/m.test(node[field])
+));
+if (duplicateContextWrites.length) {
+  throw new Error('Unmittelbare doppelte Context-Writes verbleiben in Nodes: ' + duplicateContextWrites.map(node => node.id).join(', '));
 }
 
 const forbidden = ['apiToken', 'x-camper-token', 'tokenConfigured', 'allowReadWithoutToken', 'unauthorized', 'stratificationWarning', 'stratification:'];

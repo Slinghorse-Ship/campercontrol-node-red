@@ -1,4 +1,4 @@
-<section id="campercontrol-v2-horizon" :class="dayMode?'cc2-light':'cc2-dark'">
+<section id="campercontrol-v2-horizon" :class="dayMode?'cc2-light':'cc2-dark'" @pointerdown="v2EdgeStart" @pointermove="v2EdgeMove" @pointerup="v2EdgeEnd" @pointercancel="v2EdgeCancel" @click.capture="v2GestureClickGuard">
   <svg class="cc2-icon-library" aria-hidden="true"><defs>
     <symbol id="cc2-light-nav" viewBox="0 0 32 32"><circle cx="16" cy="16" r="5"></circle><path d="M16 3v6M16 23v6M3 16h6M23 16h6M6.8 6.8l4.2 4.2M21 21l4.2 4.2M25.2 6.8 21 11M11 21l-4.2 4.2"></path></symbol>
     <symbol id="cc2-light-cabin" viewBox="0 0 32 32"><path d="M6.5 14.5Q16 9 25.5 14.5L23 22q-7 3.2-14 0Z"></path><path d="M11 18h10M7 25h18M16 5v3"></path></symbol>
@@ -27,6 +27,13 @@
     <symbol id="cc2-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"></path><path d="M18 13v6H5V6h6"></path></symbol>
     <symbol id="cc2-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></symbol>
     <symbol id="cc2-status" viewBox="0 0 24 24"><path d="M4 18V8M10 18V4M16 18v-7M22 18V6"></path></symbol>
+    <symbol id="cc2-weather-clear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"></path></symbol>
+    <symbol id="cc2-weather-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 9.3 4.5 4.5 0 0 0 7 18Z"></path></symbol>
+    <symbol id="cc2-weather-partly" viewBox="0 0 24 24"><path d="M7 8a5 5 0 0 1 9.3-2.6M4 4l1.5 1.5M12 1v2M19 4l-1.5 1.5"></path><path d="M7 20h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 11.3 4.5 4.5 0 0 0 7 20Z"></path></symbol>
+    <symbol id="cc2-weather-rain" viewBox="0 0 24 24"><path d="M7 15h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 6.3 4.5 4.5 0 0 0 7 15Z"></path><path d="m8 18-1 3M13 18l-1 3M18 18l-1 3"></path></symbol>
+    <symbol id="cc2-weather-snow" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="M8 18h.01M13 20h.01M18 18h.01"></path></symbol>
+    <symbol id="cc2-weather-storm" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="m13 15-3 5h3l-1 3 4-6h-3l1-2"></path></symbol>
+    <symbol id="cc2-weather-fog" viewBox="0 0 24 24"><path d="M7 12h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 3.3 4.5 4.5 0 0 0 7 12Z"></path><path d="M3 16h18M5 20h14"></path></symbol>
   </defs></svg>
 
   <div class="cc2-device">
@@ -68,10 +75,6 @@
               <div class="cc2-climate-controls"><button class="cc2-round-control" type="button" aria-label="Solltemperatur senken" @click="climateTarget(-1)">−</button><div class="cc2-setpoint"><strong>{{fmt(s.climate?.automation?.targetTemperature,0)}}°</strong><span>Ziel</span></div><button class="cc2-round-control" type="button" aria-label="Solltemperatur erhöhen" @click="climateTarget(1)">+</button></div>
             </article>
 
-            <article class="cc2-card cc2-quick-panel">
-              <div class="cc2-section-heading"><h3>Schnellzugriff</h3><button class="cc2-link-button" type="button" @click="go('/einstellungen')">Anpassen</button></div>
-              <div class="cc2-quick-grid"><button v-for="q in quickItems" :key="q.id" type="button" :disabled="!q.available" :aria-pressed="q.active" :aria-label="v2QuickName(q)+' '+q.status" :class="['cc2-card-button','cc2-quick-action',q.active?'is-on':'',!q.available?'is-unavailable':'']" @click="quickActivate(q)"><span class="cc2-quick-icon"><svg class="cc2-light-icon"><use :href="'#'+v2QuickIcon(q.icon)"></use></svg></span><span class="cc2-quick-copy"><span class="cc2-quick-name">{{v2QuickName(q)}}</span><span class="cc2-action-state cc2-sr-only">{{q.status}}</span></span></button></div>
-            </article>
           </div>
         </section>
 
@@ -144,13 +147,42 @@
         <section :class="['cc2-page',v2Page==='system'?'is-active':'']" data-page="system" aria-label="System">
           <div class="cc2-three-column">
             <article class="cc2-card cc2-feature-card"><h3>Verbindungen</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Victron-Daten</span><small>{{s.energy?.battery?.online?'Verbunden':'Getrennt'}}</small></button><button class="cc2-system-button" type="button"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Node-RED</span><small>{{s.system?.online?'Verbunden':'Getrennt'}}</small></button><button class="cc2-system-button" type="button" @click="go('/betrieb')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Geräte</span><small>{{v2DeviceStatus}}</small></button></div></article>
-            <article class="cc2-card cc2-feature-card"><h3>Camper</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Schnellzugriff</span></button><button class="cc2-system-button" type="button" @click="dayMode=!dayMode"><svg class="cc2-light-icon"><use href="#cc2-theme"></use></svg><span>Darstellung</span><small>{{dayMode?'Hell':'Dunkel'}}</small></button><button :class="['cc2-system-button',designVersion==='v1'?'is-active':'']" type="button" @click="setDesignVersion('v1')"><svg class="cc2-light-icon"><use href="#cc2-home"></use></svg><span>Design V1</span><small>{{designVersion==='v1'?'Aktiv':''}}</small></button><button :class="['cc2-system-button',designVersion==='v2'?'is-active':'']" type="button" @click="setDesignVersion('v2')"><svg class="cc2-light-icon"><use href="#cc2-home"></use></svg><span>Design V2</span><small>{{designVersion==='v2'?'Aktiv':''}}</small></button></div></article>
+            <article class="cc2-card cc2-feature-card"><h3>Camper</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Schnellzugriff</span></button><button class="cc2-system-button" type="button" @click="dayMode=!dayMode"><svg class="cc2-light-icon"><use href="#cc2-theme"></use></svg><span>Darstellung</span><small>{{dayMode?'Hell':'Dunkel'}}</small></button></div></article>
             <article class="cc2-card cc2-feature-card"><h3>Victron</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button" @click="openVictron"><svg class="cc2-light-icon"><use href="#cc2-external"></use></svg><span>Victron öffnen</span></button><button class="cc2-system-button" type="button" @click="go('/betrieb')"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Diagnose</span><small>{{(s.system?.alerts||[]).length}} Meldungen</small></button><button class="cc2-system-button" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-settings"></use></svg><span>Einstellungen</span></button></div></article>
           </div>
         </section>
       </main>
 
       <nav class="cc2-nav" aria-label="Hauptnavigation"><button v-for="item in v2Nav" :key="item.id" :class="['cc2-nav-button',v2Page===item.id?'is-active':'']" type="button" @click="v2OpenPage(item.id)"><svg class="cc2-light-icon"><use :href="'#'+item.icon"></use></svg><span>{{item.name}}</span></button></nav>
+
+      <button v-if="v2Panel" class="cc2-panel-scrim" type="button" aria-label="Seitenpanel schließen" @click="v2ClosePanel"></button>
+      <aside :class="['cc2-edge-panel','cc2-favorites-panel',v2Panel==='favorites'?'is-open':'']" :aria-hidden="v2Panel!=='favorites'" aria-label="Favoriten">
+        <header class="cc2-panel-header"><div><small>SCHNELLZUGRIFF</small><h2>Favoriten</h2></div><button class="cc2-panel-close" type="button" aria-label="Favoriten schließen" @click="v2ClosePanel"><svg class="cc2-light-icon"><use href="#cc2-close"></use></svg></button></header>
+        <p class="cc2-panel-hint">Kurz tippen zum Schalten · lange drücken für Details</p>
+        <div class="cc2-favorites-list">
+          <button v-for="q in quickItems" :key="q.id" type="button" :aria-disabled="!q.available" :aria-pressed="q.active" :class="['cc2-favorite',q.active?'is-on':'',!q.available?'is-unavailable':'']" @pointerdown.stop="v2FavoriteStart(q,$event)" @pointerup.stop="v2FavoriteEnd(q,$event)" @pointercancel.stop="v2FavoriteCancel" @click.stop="v2FavoriteClick(q,$event)"><span class="cc2-favorite-icon"><svg class="cc2-light-icon"><use :href="'#'+v2QuickIcon(q.icon)"></use></svg></span><span class="cc2-favorite-copy"><strong>{{v2QuickName(q)}}</strong><small>{{q.status}}</small></span><span class="cc2-favorite-state" aria-hidden="true"></span></button>
+        </div>
+        <button class="cc2-panel-settings" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Favoriten anpassen</span></button>
+      </aside>
+
+      <aside :class="['cc2-edge-panel','cc2-weather-panel',v2Panel==='weather'?'is-open':'']" :aria-hidden="v2Panel!=='weather'" aria-label="DWD Wetter">
+        <header class="cc2-panel-header"><div><small>DWD · MOSMIX</small><h2>Wetter</h2></div><button class="cc2-panel-close" type="button" aria-label="Wetter schließen" @click="v2ClosePanel"><svg class="cc2-light-icon"><use href="#cc2-close"></use></svg></button></header>
+        <template v-if="v2Weather">
+          <div class="cc2-weather-summary"><span class="cc2-weather-icon" aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(v2WeatherHourly[0]?.icon)"></use></svg></span><div><strong>{{fmt(v2WeatherHourly[0]?.tempC,1)}}°</strong><small>{{v2WeatherStation}}</small></div><span :class="['cc2-weather-freshness',v2Weather.stale?'is-stale':'']">{{v2Weather.stale?'Veraltet':v2WeatherUpdated}}</span></div>
+          <div class="cc2-weather-chart" aria-label="Temperatur und Niederschlagswahrscheinlichkeit der nächsten 24 Stunden">
+            <svg viewBox="0 0 400 150" role="img">
+              <line x1="10" y1="140" x2="390" y2="140" class="cc2-chart-axis"></line>
+              <rect v-for="bar in v2WeatherRainBars" :key="bar.key" :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height" class="cc2-chart-rain"></rect>
+              <polyline v-if="v2WeatherTempPoints" :points="v2WeatherTempPoints" class="cc2-chart-temp"></polyline>
+              <g v-for="label in v2WeatherChartLabels" :key="label.key"><text :x="label.x" y="148" text-anchor="middle">{{label.hour}}</text><text :x="label.x" :y="label.y" text-anchor="middle" class="cc2-chart-temp-label">{{label.temp}}°</text></g>
+            </svg>
+            <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regenrisiko</span></div>
+          </div>
+          <div class="cc2-weather-days"><article v-for="day in v2WeatherDaily" :key="day.date" class="cc2-weather-day"><small>{{v2WeatherDay(day.date)}}</small><span aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(day.icon)"></use></svg></span><strong>{{fmt(day.maxC,0)}}°</strong><em>{{fmt(day.minC,0)}}°</em><b>{{fmt(day.maxHourlyPrecipProbabilityPct,0)}} %</b></article></div>
+          <footer class="cc2-weather-footer"><span>{{v2Weather.attribution||'Quelle: Deutscher Wetterdienst (DWD)'}}</span><span>{{v2Weather.modelRunUtc?'Modell '+v2WeatherTime(v2Weather.modelRunUtc):''}}</span></footer>
+        </template>
+        <div v-else class="cc2-weather-empty"><svg class="cc2-light-icon" aria-hidden="true"><use href="#cc2-weather-cloud"></use></svg><strong>Wetter noch nicht verfügbar</strong><small>Der Cerbo lädt die DWD-Vorhersage zentral und stellt den letzten Cache bereit.</small></div>
+      </aside>
     </div>
   </div>
 </section>

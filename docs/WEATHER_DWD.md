@@ -18,8 +18,13 @@ den fertigen Zustand; sie kontaktieren den DWD nicht selbst.
 - D-Bus/MQTT: `com.victronenergy.campercontrol`, Instanz 0,
   `/State/Weather` (nur lesbar)
 
-Der Cache enthält keine GPS-Koordinaten. Er enthält nur die ausgewählte
-Stations-ID, den Stationsnamen und die berechnete Entfernung. Nach zwölf
+Der Venus-`dbus`-CLI liefert je nach Dienst entweder `value = ...` oder einen
+plain Scalar. Der Provider akzeptiert beide realen Formen. Ein führender Slash
+in der Zeitzone (beispielsweise `/UTC`) wird vor der `ZoneInfo`-Prüfung
+entfernt; leere Ausgaben, Fehlertexte und ungültige Zeitzonen werden verworfen.
+
+Der Cache enthält weder GPS-Koordinaten noch eine daraus abgeleitete Entfernung.
+Er enthält nur die ausgewählte Stations-ID und den Stationsnamen. Nach zwölf
 Stunden ohne erfolgreichen Abruf wird `stale:true` veröffentlicht; vorhandene
 zukünftige Werte bleiben sichtbar.
 
@@ -38,6 +43,12 @@ zukünftige Werte bleiben sichtbar.
 `maxHourlyPrecipProbabilityPct` ist bewusst keine mathematische
 Tageswahrscheinlichkeit. Fehlwerte bleiben `null` und werden nie als Null
 erfunden. `TTT` wird Kelvin → °C, Wind wird m/s → km/h umgerechnet.
+
+Node-RED validiert diesen Wert erneut (Schema 1, maximal 48 Stunden/sechs Tage
+und 16 KiB) und veröffentlicht ihn als `state.weather` für Dashboard und Ford
+SYNC. Dieser read-only Eingang ersetzt die zwei nicht verwendeten
+Abwasser-Nodes, sodass der Master bei 358 Nodes bleibt. Die D-Bus-Bridge lässt
+`weather` in `compact_state()` bewusst aus und verhindert damit Feedback.
 
 ## Betrieb und Fehlerverhalten
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Bridge the local CamperControl API to gui-v2's existing D-Bus/MQTT path.
 
-The browser never connects to Node-RED directly.  FlashMQ's Venus D-Bus plugin
-exports this ``com.victronenergy.*`` service as N/R/W MQTT topics both locally
-and through VRM.  Native gui-v2 continues to use the loopback HTTP adapter.
+Neither native gui-v2 nor its WASM build connects to Node-RED directly.
+FlashMQ's Venus D-Bus plugin exports this ``com.victronenergy.*`` service as
+N/R/W MQTT topics both locally and through VRM; native GX reads the same
+service over D-Bus.  The loopback HTTP API remains private to this bridge.
 """
 
 from __future__ import annotations
@@ -29,9 +30,11 @@ from campercontrol_weather import RETRY_SECONDS, REFRESH_SECONDS, WeatherProvide
 
 SERVICE_NAME = "com.victronenergy.campercontrol"
 DEVICE_INSTANCE = 0
-SERVICE_VERSION = "1.1.0"
+SERVICE_VERSION = "1.2.0"
 API_BASE = "http://127.0.0.1:1880/camper/api/v2"
 POLL_SECONDS = 1.0
+STATE_ERROR_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0)
+STATUS_HEARTBEAT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 2.0
 MAX_COMMAND_BYTES = 16 * 1024
 MAX_FRAGMENT_BYTES = 128 * 1024
@@ -103,6 +106,9 @@ def validate_command_payload(raw_value: Any) -> tuple[str, dict[str, Any]]:
         value = body.get(key)
         if not isinstance(value, str) or not value or len(value) > 64:
             raise ValueError(f"command {key} is invalid")
+    origin = body.get("origin")
+    if origin not in ("vrm", "gx"):
+        raise ValueError("command origin must be vrm or gx")
     request_id = body.get("requestId", "")
     if request_id and (not isinstance(request_id, str) or len(request_id) > 128):
         raise ValueError("command requestId is invalid")
@@ -153,6 +159,9 @@ class CamperControlBridge:
         self._stop = threading.Event()
         self._last_fragments: dict[str, str] = {}
         self._last_weather = ""
+        self._last_status_update = 0
+        self._api_connected = 0
+        self._last_error = "Starting"
         self._weather = WeatherProvider()
 
         self._service.add_mandatory_paths(
@@ -194,31 +203,47 @@ class CamperControlBridge:
             self._commands.put_nowait(body)
             return True
         except (ValueError, queue.Full) as error:
-            self._service["/Status/LastError"] = str(error)[:256]
+            self._last_error = str(error)[:256]
+            self._service["/Status/LastError"] = self._last_error
             return False
 
     def _apply_state(self, fragments: dict[str, str]) -> bool:
+        now = int(time.time())
+        changed = any(self._last_fragments.get(section) != encoded for section, encoded in fragments.items())
+        heartbeat_due = now - self._last_status_update >= STATUS_HEARTBEAT_SECONDS
         with self._service as service:
             for section, encoded in fragments.items():
                 if self._last_fragments.get(section) != encoded:
                     service[f"/State/{section.title()}"] = encoded
-            service["/Status/ApiConnected"] = 1
-            service["/Status/LastUpdate"] = int(time.time())
-            service["/Status/LastError"] = ""
+            if self._api_connected != 1:
+                service["/Status/ApiConnected"] = 1
+                self._api_connected = 1
+            if changed or heartbeat_due:
+                service["/Status/LastUpdate"] = now
+                self._last_status_update = now
+            if self._last_error:
+                service["/Status/LastError"] = ""
+                self._last_error = ""
         self._last_fragments = fragments
         return False
 
     def _apply_error(self, error: str) -> bool:
+        message = error[:256]
         with self._service as service:
-            service["/Status/ApiConnected"] = 0
-            service["/Status/LastError"] = error[:256]
+            if self._api_connected != 0:
+                service["/Status/ApiConnected"] = 0
+                self._api_connected = 0
+            if self._last_error != message:
+                service["/Status/LastError"] = message
+                self._last_error = message
         return False
 
     def _apply_command_result(self, result: dict[str, Any]) -> bool:
         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         self._service["/LastCommandResult"] = encoded
         if result.get("ok") is False:
-            self._service["/Status/LastError"] = str(result.get("error", "Befehl fehlgeschlagen"))[:256]
+            self._last_error = str(result.get("error", "Befehl fehlgeschlagen"))[:256]
+            self._service["/Status/LastError"] = self._last_error
         return False
 
     def _apply_weather(self, weather: dict[str, Any]) -> bool:
@@ -242,6 +267,7 @@ class CamperControlBridge:
         return False
 
     def _state_worker(self) -> None:
+        failure_index = 0
         while not self._stop.is_set():
             started = time.monotonic()
             try:
@@ -249,10 +275,13 @@ class CamperControlBridge:
                 state = packet.get("state", packet)
                 fragments = compact_state(state)
                 self._glib.idle_add(self._apply_state, fragments)
+                failure_index = 0
+                delay = max(0.05, POLL_SECONDS - (time.monotonic() - started))
             except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError) as error:
                 self._glib.idle_add(self._apply_error, f"Camper API: {error}")
-            elapsed = time.monotonic() - started
-            self._stop.wait(max(0.05, POLL_SECONDS - elapsed))
+                delay = STATE_ERROR_BACKOFF_SECONDS[min(failure_index, len(STATE_ERROR_BACKOFF_SECONDS) - 1)]
+                failure_index += 1
+            self._stop.wait(delay)
 
     def _command_worker(self) -> None:
         while not self._stop.is_set():

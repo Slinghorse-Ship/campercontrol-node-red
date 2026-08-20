@@ -372,7 +372,6 @@ def build_snapshot(
         "station": {
             "id": station.station_id,
             "name": station_name or station.name,
-            "distanceKm": None if distance_km is None else round(distance_km, 1),
         },
         "modelRunUtc": model_run_utc,
         "fetchedAtUtc": iso_utc(now_utc),
@@ -473,6 +472,28 @@ def _download(url: str, maximum_bytes: int, timeout: float = 30.0) -> bytes:
     return payload
 
 
+def _parse_dbus_output(output: str) -> Any:
+    """Parse both dbus CLI formats used by Venus OS releases.
+
+    Some services print ``value = ...`` while others return the scalar alone.
+    Treat empty/oversized output as unavailable and never interpret stderr.
+    """
+    text = str(output or "").strip()
+    if not text or len(text) > 4096:
+        return None
+    match = re.search(r"^\s*value\s*=\s*(.+?)\s*$", text, re.MULTILINE | re.IGNORECASE)
+    raw = (match.group(1) if match else text).strip()
+    if not raw or raw.lower().startswith(("error", "failed", "traceback")):
+        return None
+    try:
+        return ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        try:
+            return float(raw)
+        except ValueError:
+            return raw.strip("'\"") or None
+
+
 def _dbus_value(service: str, path: str) -> Any:
     result = subprocess.run(
         ["dbus", "-y", service, path, "GetValue"],
@@ -483,17 +504,7 @@ def _dbus_value(service: str, path: str) -> Any:
     )
     if result.returncode != 0:
         return None
-    match = re.search(r"value\s*=\s*(.+?)\s*$", result.stdout, re.MULTILINE | re.IGNORECASE)
-    if not match:
-        return None
-    raw = match.group(1).strip()
-    try:
-        return ast.literal_eval(raw)
-    except (SyntaxError, ValueError):
-        try:
-            return float(raw)
-        except ValueError:
-            return raw.strip("'\"")
+    return _parse_dbus_output(result.stdout)
 
 
 def read_gx_position() -> tuple[float, float] | None:
@@ -521,7 +532,14 @@ def read_gx_position() -> tuple[float, float] | None:
 
 def read_gx_timezone() -> str:
     value = _dbus_value("com.victronenergy.settings", "/Settings/System/TimeZone")
-    return value if isinstance(value, str) and value else "UTC"
+    candidate = value.strip().lstrip("/") if isinstance(value, str) else ""
+    if not candidate:
+        return "UTC"
+    try:
+        ZoneInfo(candidate)
+    except (KeyError, ValueError):
+        return "UTC"
+    return candidate
 
 
 class WeatherProvider:

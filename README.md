@@ -6,7 +6,7 @@ Die Ford-SYNC-QML-App liegt getrennt im Repository `sync3-camper`.
 ## Verzeichnisstruktur
 
 - `flows/CamperControl_NodeRED.json` – aktueller und einziger Flow-Master
-- `dashboard/camper-dashboard.html` – V1-Dashboard, gemeinsame Live-Bindings und deterministischer V2-Einfügepunkt
+- `dashboard/camper-dashboard.html` – schlanke V2-only-Laufzeit und gemeinsame Live-Bindings
 - `dashboard/camper-dashboard-v2.html` – Transit-Horizon-V2-Struktur mit Live-State/Commands
 - `dashboard/camper-dashboard-v2.css` – aus der verbindlichen Touch-50-V2-Quelle übernommene Gestaltung
 - `dashboard/assets/` – transparente Transit-Liniensymbole, identisch zur Ford-SYNC-App
@@ -35,8 +35,7 @@ Flow-Build zusammen und lädt bei jedem Seitenaufruf einen echten
 `/camper/api/v2/state`-Snapshot vom Cerbo; sie besitzt keine Demo-Fallbackwerte
 und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
 `/?page=lights`, `/?page=energy&pane=sources` und
-`/?page=energy&pane=solar-detail`. `/?design=v1` rendert denselben Live-Snapshot
-im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
+`/?page=energy&pane=solar-detail`. Mit `--cerbo http://172.24.24.1:1880` und
 `--port 4175` lassen sich Quelle und Port explizit setzen.
 
 ## Regeln
@@ -46,7 +45,7 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
 - Victron-Geräte möglichst mit den offiziellen Victron-Node-RED-Nodes anbinden.
 - Hardwarebefehle erst nach erfolgreicher Validierung und mit vorherigem Live-Backup deployen.
 - Die lokale Camper-API verwendet HTTP auf Port 1880 und darf nicht ins Internet weitergeleitet werden.
-- gui-v2 WASM/VRM greift nicht direkt auf Port 1880 zu. Der eigene
+- Weder gui-v2 GX noch WASM/VRM greifen direkt auf Port 1880 zu. Der eigene
   `com.victronenergy.campercontrol`-Dienst veröffentlicht kompakte Zustände und
   Befehle über die vorhandene D-Bus-/FlashMQ-N/R/W-Infrastruktur; Details stehen
   in `docs/vrm-remote-transport.md`.
@@ -62,25 +61,36 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
 - Die Automatik schaltet standardmäßig ab 65 °C ein und bei 60 °C wieder aus.
 - Beide GX-Relais müssen in Venus OS auf `Manuell` konfiguriert sein.
 
-## Auswählbares Dashboard-Design
+## Transit-Horizon V2-only
 
-- Unter **Einstellungen → Oberfläche** kann dauerhaft zwischen `Design V1` und
-  `Design V2 · Transit Horizon` gewechselt werden.
-- Gespeichert wird ausschließlich `ui.designVersion` mit dem validierten Wert
-  `v1` oder `v2` in der vorhandenen `camperConfig`-Dateiablage des Flow-Kontexts.
-  Ungültige oder fehlende Werte werden auf `v2` normalisiert.
-- `GET /camper/api/v2/settings` liefert die Auswahl als
-  `config.ui.designVersion`; der normale Zustandssnapshot veröffentlicht sie als
-  `state.ui.designVersion`.
-- Ein Wechsel verwendet den bestehenden Settings-Patch
-  `{"target":"settings","action":"patch","patch":{"ui":{"designVersion":"v1"}}}`
-  beziehungsweise `v2`. Es gibt keinen zweiten Geräte- oder Befehlspfad: Beide
-  Designs verwenden dieselben realen Zustände und dieselben validierten
-  Schaltbefehle.
-- V1 und V2 sind getrennte Template-Zweige. V1 bleibt die bisherige Oberfläche;
-  V2 bildet die Transit-Horizon-Struktur mit Home, Licht, Klima, Energie,
-  Wasser und System ab. `scripts/build-flow.js` setzt die drei Dashboard-Quellen
-  mechanisch in den 358-Node-Master ein.
+- Das Dashboard enthält ausschließlich Transit Horizon V2 mit Home, Licht,
+  Klima, Energie, Wasser und System. V1-Markup, Designauswahl und
+  `ui.designVersion` werden weder ausgeführt noch im Snapshot veröffentlicht.
+- Ein Wisch vom linken Bildschirmrand öffnet das 340-px-Favoritenpanel; ein
+  Wisch vom rechten Rand das 560-px-DWD-Panel. Es gibt keine sichtbaren Griffe.
+  Gegenwisch, Hintergrund-Tipp und Schließen-Taste schließen das Panel.
+- Favoriten lesen ausschließlich `state.ui.quickAccess` und verwenden dessen
+  bereits validierte `available`-/`command`-Daten. Kurzer Tipp schaltet, langer
+  Druck öffnet die passende vorhandene Detailseite und erzeugt keinen Befehl.
+- Wetter wird nur aus `com.victronenergy.campercontrol/0 /State/Weather`
+  übernommen (Schema 1, höchstens 16 KiB). Node-RED führt keinen Wetter-HTTP-
+  Abruf und keinen Dashboard-Timer aus; `compact_state` transportiert Wetter
+  nicht zurück zum D-Bus-Dienst.
+- Alle D-Bus-, Settings-, Command- und Wetteranlässe laufen durch einen
+  gemeinsamen Core-Gate mit höchstens zwei Snapshot-Auswertungen pro Sekunde;
+  STAR-Power besitzt zusätzlich einen 1-Hz-Vorgate. Zwischen-Ticks werden ohne
+  Queue verworfen, weil die Normalisierer den neuesten Wert bereits speichern.
+  Ein inhaltlich identischer Snapshot wird weder persistiert noch erneut an die
+  UI gesendet. Die lokale Bedienung aktualisiert Schaltzustände optimistisch,
+  bis der zentrale Snapshot die Rückmeldung bestätigt.
+- Die D-Bus-Bridge fragt den lokalen Zustand im Normalbetrieb mit 1 Hz ab. Bei
+  einem hängenden Node-RED wartet sie nach Fehlern zusätzlich 1, 2, 5 und
+  anschließend 10 Sekunden, statt den überlasteten HTTP-Port weiter zu fluten.
+- Der Bridge-Befehl verlangt den Ursprung `vrm` oder `gx`. Bei `vrm` lehnt der
+  zentrale Router ausschließlich das Ausschalten von STAR-Power-Kanal 5 mit
+  `remote_link_protection` ab, damit die einzige Remote-Verbindung nicht ihren
+  eigenen Uplink trennt. Einschalten aus VRM sowie Ausschalten auf GX, Ford
+  SYNC oder lokal bleiben erlaubt.
 - V2 zeichnet auf 800 × 480 ohne künstlichen Geräte-Rand bis an alle vier
   Displayecken. Das Transit-Liniensymbol besitzt in Tag und Nacht echte
   Transparenz und denselben kompakten FORD-Grill wie die SYNC-App.

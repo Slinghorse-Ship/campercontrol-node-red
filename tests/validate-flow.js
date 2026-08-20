@@ -11,6 +11,7 @@ const dashboardV2CssPath = path.join(root, 'dashboard', 'camper-dashboard-v2.css
 const transitDarkPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-dark.png');
 const transitLightPath = path.join(root, 'dashboard', 'assets', 'transit-line-symbol-light.png');
 const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
+const packagePath = path.join(root, 'package.json');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
 const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
@@ -23,6 +24,7 @@ const dashboardV2Markup = dashboardV2MarkupSource
   .trim();
 const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
+const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const dashboard = dashboardTemplate
   .replace('<!-- CAMPERCONTROL_V2_MARKUP -->', dashboardV2Markup)
   .replace('/* CAMPERCONTROL_V2_CSS */', dashboardV2Css);
@@ -83,12 +85,90 @@ for (const node of flows) {
   }
 }
 
+// Vollständiger Ressourcen-/Zyklus-Audit. Tarjan erfasst auch indirekte
+// Node-RED-Zyklen; jeder erlaubte Zyklus muss eine echte Zeit- oder
+// Benutzergrenze besitzen. Reine Function-/Change-Rückkopplungen sind damit
+// als Regression ausgeschlossen.
+let sccIndex = 0;
+const sccStack = [];
+const sccOnStack = new Set();
+const sccIndices = new Map();
+const sccLowLinks = new Map();
+const cyclicComponents = [];
+const visitScc = id => {
+  sccIndices.set(id, sccIndex);
+  sccLowLinks.set(id, sccIndex);
+  sccIndex += 1;
+  sccStack.push(id);
+  sccOnStack.add(id);
+  for (const target of targetsOf(id)) {
+    if (!sccIndices.has(target)) {
+      visitScc(target);
+      sccLowLinks.set(id, Math.min(sccLowLinks.get(id), sccLowLinks.get(target)));
+    } else if (sccOnStack.has(target)) {
+      sccLowLinks.set(id, Math.min(sccLowLinks.get(id), sccIndices.get(target)));
+    }
+  }
+  if (sccLowLinks.get(id) !== sccIndices.get(id)) return;
+  const component = [];
+  let member;
+  do {
+    member = sccStack.pop();
+    sccOnStack.delete(member);
+    component.push(member);
+  } while (member !== id);
+  if (component.length > 1 || targetsOf(id).includes(id)) cyclicComponents.push(component);
+};
+for (const node of flows) if (!sccIndices.has(node.id)) visitScc(node.id);
+check(cyclicComponents.length === 3, 'Flow besitzt nur die drei bekannten, begrenzten Interaktionszyklen');
+const cycleBoundaryTypes = new Set(['delay', 'trigger', 'ui-template', 'http request', 'exec']);
+for (const component of cyclicComponents) {
+  check(component.some(id => cycleBoundaryTypes.has(get(id).type)), `Zyklus ${component.join(',')} besitzt eine Zeit-/Benutzergrenze`);
+  check(component.filter(id => get(id).type === 'ui-template').every(id => get(id).passthru === false), `UI-Grenzen in Zyklus ${component.join(',')} haben passthru=false`);
+}
+
+const repeatingInjects = flows.filter(node => node.type === 'inject' && String(node.repeat || '') !== '');
+check(repeatingInjects.length === 11, 'Es existieren exakt elf periodische Injects');
+for (const node of repeatingInjects) check(Number(node.repeat) >= 5, `${node.id} läuft nicht schneller als alle fünf Sekunden`);
+const timedCoreNodes = flows.filter(node => node.type === 'delay' || node.type === 'trigger');
+check(timedCoreNodes.length === 9, 'Alle neun Zeitgrenzen sind Core-Delay-/Trigger-Nodes');
+check(flows.filter(node => node.type === 'debug').every(node => node.active === false && node.console !== true), 'Kein Debug-Node schreibt im Betrieb Logs');
+check(!flows.some(node => ['file', 'file out', 'watch', 'tail'].includes(node.type)), 'Flow besitzt keinen Datei-Writer oder Dateiwächter');
+
+const allFunctionCode = flows.filter(node => node.type === 'function').map(node => `${node.func || ''}\n${node.initialize || ''}\n${node.finalize || ''}`).join('\n');
+const resourceSnapshotFunction = get('ada9353cc6ea4a4c').func || '';
+const resourceSettingsFunction = get('47003434a27acbe7').func || '';
+check(!/global\.set\('camper\.(?:snapshot|indevolt|starlink)'/.test(allFunctionCode), 'Keine ungenutzten globalen Duplikate persistieren Snapshot-, INDEVOLT- oder Starlink-State');
+const hasImmediateDuplicateWrite = flows.filter(node => node.type === 'function').some(node => ['func', 'initialize', 'finalize'].some(field =>
+  /^(?:[ \t]*)(context|flow|global)\.set\(([^;\r\n]+)\);\r?\n[ \t]*(?:try \{ )?\1\.set\(\2\);/m.test(node[field] || '')
+));
+check(!hasImmediateDuplicateWrite, 'Keine unmittelbar doppelten Context-Writes verbleiben');
+check(!get('12f9ef01215ad8d3').func.includes('persistentStore') && (get('12f9ef01215ad8d3').func.match(/flow\.set\('autotermPersistent'/g) || []).length === 1, 'AUTOTERM besitzt genau einen persistenten Default-Store-Schreibpfad');
+check(!resourceSettingsFunction.includes("else flow.set('camperConfig'") && resourceSettingsFunction.includes("const persist = () => flow.set('camperConfig', cfg);"), 'Settings schreiben Konfiguration nur bei echter Änderung oder Migration');
+check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-500)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Events und Commands besitzen feste Retention einschließlich Legacy-Cleanup');
+check(resourceSnapshotFunction.includes('while (list.length && list[0].timestamp < minimum)') && resourceSnapshotFunction.includes('recent: history.quarterHour.slice(-24)'), 'Historie wird nach Zeitfenster beschnitten und im Snapshot auf 24 Punkte begrenzt');
+check(resourceSettingsFunction.includes('retainCount: Math.round(number') && resourceSettingsFunction.includes('40, 10, 200'), 'Command-Retention ist auf höchstens 200 begrenzt');
+check(resourceSettingsFunction.includes('.slice(0, 12).map((scene') && resourceSettingsFunction.includes('.slice(0, 30).map(item') && resourceSettingsFunction.includes('.slice(0, 20).map((task'), 'Szenen, Szenenaktionen und Wartungseinträge sind begrenzt');
+check(get('6265bf6f9bade1e5').func.includes('ids.slice(32)') && resourceSnapshotFunction.includes('> 65000'), 'WebSocket-Clients sind auf 32 begrenzt und laufen nach 65 Sekunden ab');
+check(get('d92d04ca2b1964f9').func.includes('scan.results = scan.results.slice(-8)'), 'INDEVOLT-Discovery hält höchstens acht temporäre Ergebnisse');
+check(get('external_wifi_state_update').func.includes('entries = entries.slice(0, 64)') && get('external_wifi_state_update').func.includes('64 * 1024'), 'WLAN-Zustand ist auf 64 Netze und 64 KiB Rohdaten begrenzt');
+check(!resourceSnapshotFunction.includes("flow.set('camperSequence'") && !resourceSnapshotFunction.includes("global.set('camper.snapshot'"), 'Snapshot erzeugt keine redundanten Sequence-/Global-Writes');
+check(resourceSnapshotFunction.includes('if (commandsChanged) flow.set') && resourceSnapshotFunction.includes('if (historyChanged)') && resourceSnapshotFunction.includes('if (clientsChanged) flow.set'), 'Große Context-Sammlungen werden changed-only gespeichert');
+check(resourceSnapshotFunction.includes('const MAX_SNAPSHOT_BYTES = 256 * 1024') && resourceSnapshotFunction.includes("node.error('snapshot_too_large')"), 'Der vollständige lokale Snapshot ist hart auf 256 KiB begrenzt');
+
+const httpRequests = flows.filter(node => node.type === 'http request');
+check(httpRequests.length === 4, 'Flow besitzt exakt vier bekannte HTTP-Request-Nodes');
+check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.name || ''} ${node.url || ''}`)), 'Node-RED führt keinen Wetter-HTTP-Abruf aus');
+check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
+
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
+check(flows.length === 358, 'Master bleibt exakt der validierte 358-Node-Flow');
+check(packageJson.version === '4.3.0', 'Releaseversion ist 4.3.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
-check(!dashboard.includes('v-if="!detail"'), 'Untere Navigation bleibt auf Detailseiten sichtbar');
-check(dashboard.includes("@click=\"detail='';page='home'\""), 'Navigation schließt Detailseiten explizit');
-check(dashboard.includes('.fs-detail-page{height:calc(100vh - 160px)!important'), 'Detailseiten reservieren Platz für die Navigation');
+check(!dashboard.includes('design-v1') && !dashboard.includes('fs-detail-page'), 'Dashboard enthält keine V1-Runtime oder V1-Detailseiten');
+check(!dashboard.includes('detail=') && !dashboard.includes('v-if="!detail"'), 'V2 verwendet ausschließlich sein eigenes Seitenmodell');
+check(dashboard.includes('@click="v2OpenPage(item.id)"'), 'V2-Navigation verwendet den gemeinsamen Seitenwechsel');
 
 // Schnellzugriff: vier generische, backendvalidierte Aktionen statt einer
 // fest verdrahteten Lichtauswahl. Alte v4-Lichtbelegungen werden migriert.
@@ -97,7 +177,7 @@ const snapshotFunction = get('ada9353cc6ea4a4c').func || '';
 check(settingsFunction.includes('cfg.version = 5'), 'Konfigurationsschema ist v5');
 check(settingsFunction.includes('source.ui.quickAccessLightIds.map'), 'v4-Lichtbelegungen werden auf generische IDs migriert');
 check(settingsFunction.includes('cfg.ui = { quickAccessIds,'), 'Settings speichern generische Schnellzugriff-IDs');
-check(settingsFunction.includes("designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2'"), 'Settings validieren Design V1/V2 und verwenden V2 als Fallback');
+check(settingsFunction.includes('delete source.ui.designVersion;'), 'Settings entfernen alte V1/V2-Auswahl bei der Migration');
 for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_left', 'light:inside_main']) {
   check(settingsFunction.includes(id), `Generischer Standard-Schnellzugriff enthält ${id}`);
 }
@@ -105,31 +185,24 @@ for (const target of ['device:inverter', 'device:orion', 'device:indevolt_grid',
   check(snapshotFunction.includes(target), `Schnellzugriff-Katalog enthält ${target}`);
 }
 check(snapshotFunction.includes('quickAccessOptions, externalWifiTileEnabled'), 'Snapshot veröffentlicht Auswahl, Katalog und aufgelöste Aktionen');
-check(snapshotFunction.includes("designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2'"), 'Snapshot veröffentlicht die persistierte Designversion');
+check(!snapshotFunction.includes('designVersion:'), 'Snapshot veröffentlicht keine veraltete Designauswahl');
 check(snapshotFunction.includes("target: 'waterPump', action: 'set'"), 'Wasserpumpen-Schnellzugriff nutzt den validierten Router');
 check(snapshotFunction.includes("target: 'scene', action: 'run'"), 'Szenen sind als Schnellzugriff auswählbar');
 check(dashboard.includes('v-for="q in quickItems"'), 'Dashboard rendert generische Schnellzugriffe');
-check(dashboard.includes('quickActivate(q)'), 'Dashboard führt den vom Backend aufgelösten Befehl aus');
-check(dashboard.includes("settingsPatch({ui:{quickAccessIds:ids}})"), 'Dashboard speichert generische IDs');
-check(dashboard.includes("designV2?'design-v2':'design-v1'"), 'Dashboard aktiviert V1/V2 über eine gemeinsame Template-Wurzel');
-check(dashboard.includes("setDesignVersion('v1')") && dashboard.includes("setDesignVersion('v2')"), 'Dashboard-Einstellungen bieten Design V1 und V2 an');
-check(dashboard.includes('this.settingsPatch({ui:{designVersion:version}})'), 'Dashboard speichert die Auswahl über den bestehenden Settings-Patch');
-check((dashboard.match(/command\(target,action,value,extra=/g) || []).length === 1, 'V1 und V2 teilen exakt dieselbe Command-Methode');
-check(dashboard.includes('id="fs-selectable-designs-v2"'), 'Dashboard enthält die eigenständige Transit-Horizon-Gestaltung');
+check(dashboard.includes('v2FavoriteClick(q,$event)') && dashboard.includes('this.quickActivate(item)'), 'Favoriten führen ausschließlich den vom Backend aufgelösten Befehl aus');
+check(!dashboard.includes('settingsPatch({ui:{quickAccessIds:ids}})'), 'Dashboard verändert die zentral konfigurierte Favoritenauswahl nicht');
+check(!dashboard.includes('designV2') && !dashboard.includes('setDesignVersion'), 'Dashboard ist ausschließlich V2');
+check((dashboard.match(/command\(target,action,value,extra=/g) || []).length === 1, 'V2 besitzt exakt eine gemeinsame Command-Methode');
+check(dashboard.includes('id="campercontrol-v2-horizon"'), 'Dashboard enthält ausschließlich die eigenständige Transit-Horizon-Gestaltung');
 
 // Transit Horizon V2: eigenständiges, aus der verbindlichen 800x480-Quelle
 // übernommenes Markup/CSS mit denselben Live-Zuständen und Command-Helfern wie V1.
 check((dashboardTemplate.match(/<!-- CAMPERCONTROL_V2_MARKUP -->/g) || []).length === 1, 'Dashboard-Template besitzt genau einen V2-Markup-Platzhalter');
 check((dashboardTemplate.match(/\/\* CAMPERCONTROL_V2_CSS \*\//g) || []).length === 1, 'Dashboard-Template besitzt genau einen V2-CSS-Platzhalter');
 check(!dashboard.includes('CAMPERCONTROL_V2_MARKUP') && !dashboard.includes('CAMPERCONTROL_V2_CSS'), 'Build löst beide V2-Platzhalter vollständig auf');
-check(dashboardTemplate.includes('<template v-if="designV2">') && dashboardTemplate.includes('<template v-else>'), 'V1 und V2 sind getrennte Template-Zweige');
-const normalizedDashboardTemplate = dashboardTemplate.replace(/\r\n/g, '\n');
-const v1MarkupStart = normalizedDashboardTemplate.indexOf('  <header class="fs-top">');
-const v1MarkupEnd = normalizedDashboardTemplate.indexOf('\n  </template>\n</main>', v1MarkupStart);
-const v1Markup = normalizedDashboardTemplate.slice(v1MarkupStart, v1MarkupEnd).trimEnd();
-check(v1MarkupStart >= 0 && v1MarkupEnd > v1MarkupStart, 'V1-Markupblock ist vollständig extrahierbar');
-check(crypto.createHash('sha256').update(v1Markup).digest('hex') === '0cabedd273272c4fe40c70145785220742f7ea30c3e2be1107779e156d8a4bbd', 'V1-Markup ist bytegleich zum freigegebenen fac6ec-Stand');
-check(previewSource.includes("query.get('design') === 'v1' ? 'v1' : 'v2'") && previewSource.includes('designVersion: design'), 'Read-only Preview unterstützt einen expliziten V1-Home-Smoke');
+check(!dashboardTemplate.includes('<template v-else>') && !dashboardTemplate.includes('designV2'), 'V1-Templatezweig ist vollständig entfernt');
+check(!dashboardTemplate.includes('fs-icon-sprite') && !dashboardTemplate.includes('designVersion'), 'V1-Symbole und V1-Payload sind entfernt');
+check(!previewSource.includes("query.get('design')") && !previewSource.includes('designVersion:'), 'Read-only Preview kennt nur den V2-Stand');
 check(dashboardV2Markup.includes('id="campercontrol-v2-horizon"'), 'V2 verwendet die Transit-Horizon-Wurzel der Designquelle');
 for (const page of ['home', 'lights', 'climate', 'energy', 'water', 'system']) {
   check(dashboardV2Markup.includes(`data-page="${page}"`), `V2 enthält Seite ${page}`);
@@ -138,13 +211,73 @@ for (const page of ['home', 'lights', 'climate', 'energy', 'water', 'system']) {
 check((dashboardV2Markup.match(/class="cc2-nav-button/g) || []).length === 0 && dashboardV2Markup.includes('v-for="item in v2Nav"'), 'V2 rendert die sechs Ziele aus genau einem Navigationsmodell');
 check(dashboard.includes("v2Nav(){return[{id:'home'") && dashboard.includes("{id:'system',name:'System'"), 'V2-Navigationsmodell umfasst Home bis System');
 
+// Unsichtbare Edge-Swipe-Panels: kein Griff, kein eigener Datenabruf und keine
+// Timer. Favoriten kommen aus dem zentralen Snapshot; Wetter ist read-only.
+check(dashboardV2Markup.includes('@pointerdown="v2EdgeStart"') && dashboardV2Markup.includes('@pointermove="v2EdgeMove"') && dashboardV2Markup.includes('@pointerup="v2EdgeEnd"'), 'Beide Panels werden über vollständige Edge-Swipe-Gesten geöffnet');
+check(dashboard.includes("x<=24") && dashboard.includes("x>=rect.width-24") && dashboard.includes('Math.abs(dx)<64'), 'Unsichtbare Hotzones sind 24 px breit und erfordern 64 px Wischweg');
+check(dashboard.includes("mode==='close-favorites'&&dx<0") && dashboard.includes("mode==='close-weather'&&dx>0"), 'Gegenwisch schließt linkes und rechtes Panel');
+check(dashboardV2Markup.includes('class="cc2-panel-scrim"') && (dashboardV2Markup.match(/@click="v2ClosePanel"/g) || []).length >= 3, 'Scrim und beide Close-Schaltflächen schließen Panels');
+check(!dashboardV2Markup.includes('cc2-panel-handle') && !dashboardV2Markup.includes('Panel öffnen'), 'Es gibt keinen sichtbaren Griff oder Öffnen-Button');
+check(dashboardV2Css.includes('width: min(340px, calc(100% - 44px))') && dashboardV2Css.includes('width: min(560px, calc(100% - 44px))'), 'Favoriten- und Wetterpanel besitzen 340/560 px Zielbreite');
+check(dashboardV2Markup.includes('v-for="q in quickItems"') && dashboardV2Markup.includes(':aria-disabled="!q.available"'), 'Favoriten verwenden Auswahl, Zustand und Gating aus state.ui.quickAccess');
+check(dashboard.includes('Date.now()-press.started>=600') && dashboard.includes('v2OpenFavoriteDetail(item)'), 'Langes Drücken öffnet nach 600 ms die vorhandene Detailseite ohne Timer');
+check(!dashboardV2Markup.includes('cc2-quick-panel'), 'Home dupliziert die Favoriten nicht als sichtbare Schnellzugriffsleiste');
+const dashboardScript = dashboard.match(/<script>\s*([\s\S]*?)\s*<\/script>/)?.[1] || '';
+check(!/\b(?:setTimeout|setInterval)\s*\(/.test(dashboardScript), 'V2-Dashboard erzeugt keine Browser-Timer');
+check(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\b/.test(dashboardScript), 'V2-Dashboard startet keinen eigenen Daten- oder Wettertransport');
+check(!/\b(?:Chart|Highcharts|Plotly|ECharts)\b/.test(dashboard), 'Wetterchart benötigt keine externe Chart-Bibliothek');
+check(dashboard.includes('this.s.weather') && dashboard.includes('hourly.slice(0,24)') && dashboard.includes('daily.slice(0,6)'), 'Wetterpanel liest genau 24 Stunden und sechs Tage aus state.weather');
+check(dashboardV2Markup.includes('<polyline v-if="v2WeatherTempPoints"') && dashboardV2Markup.includes('v-for="bar in v2WeatherRainBars"'), 'Wetterchart zeigt Temperaturkurve und Niederschlagswahrscheinlichkeit nativ als SVG');
+check(dashboardV2Markup.includes('Deutscher Wetterdienst (DWD)'), 'Wetterpanel zeigt die DWD-Attribution');
+
+const weatherInput = get('weather_state_in');
+const weatherValidator = get('weather_state_validate');
+check(weatherInput.type === 'victron-input-custom' && weatherInput.service === 'com.victronenergy.campercontrol/0' && weatherInput.path === '/State/Weather', 'Wetter kommt ausschließlich vom zentralen CamperControl-D-Bus-Pfad');
+check(weatherInput.onlyChanges === true && JSON.stringify(weatherInput.wires) === JSON.stringify([['weather_state_validate']]), 'Wetter-D-Bus-Eingang sendet nur Änderungen an den Validator');
+check(weatherValidator.type === 'function' && JSON.stringify(weatherValidator.wires) === JSON.stringify([['cff2c4d32221ccd8']]), 'Validiertes Wetter läuft ausschließlich durch den gemeinsamen Snapshot-Gate');
+check(weatherValidator.func.includes('const MAX_BYTES = 16 * 1024') && weatherValidator.func.includes('source.schema !== 1') && weatherValidator.func.includes('source.hourly.length > 48') && weatherValidator.func.includes('source.daily.length > 6'), 'Wettervalidator erzwingt 16 KiB, Schema 1, 48 Stunden und sechs Tage');
+check(weatherValidator.func.includes("flow.get('camperWeather')") && weatherValidator.func.includes('if (previousJson === canonical) return null'), 'Wettertransport ist changed-only und erzeugt keinen Feedback-Loop');
+check(!/\b(?:setTimeout|setInterval|fetch|XMLHttpRequest)\b/.test(weatherValidator.func), 'Wettervalidator besitzt weder Timer noch HTTP-Transport');
+check(snapshotFunction.includes("const weatherStored = flow.get('camperWeather');") && snapshotFunction.includes('    weather,'), 'Snapshot veröffentlicht das validierte Wetter zentral für Ford und Dashboard');
+const weatherStore = new Map();
+const weatherFlow = { get: key => weatherStore.get(key), set: (key, value) => weatherStore.set(key, value) };
+const weatherNode = { status() {} };
+const runWeatherValidator = payload => new Function('msg', 'flow', 'context', 'node', 'env', 'RED', weatherValidator.func)(
+  { payload }, weatherFlow, {}, weatherNode, {}, {}
+);
+const weatherFixture = {
+  schema: 1,
+  source: 'DWD MOSMIX_L',
+  attribution: 'Quelle: Deutscher Wetterdienst',
+  station: { id: '10641', name: 'Köln/Bonn' },
+  modelRunUtc: '2026-08-20T00:00:00Z',
+  fetchedAtUtc: '2026-08-20T05:00:00Z',
+  stale: false,
+  timezone: 'Europe/Berlin',
+  sun: { date: '2026-08-20', riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z', origin: 'calculated' },
+  hourly: [{ t: '2026-08-20T06:00:00Z', tempC: 18.2, precipProbabilityPct: 30, precipMm: 0.2, ww: 61, icon: 'rain', windKmh: 12, windDeg: 240, gustKmh: 24, latitude: 50.8 }],
+  daily: [{ date: '2026-08-20', minC: 12, maxC: 22, precipMm: 1.4, maxHourlyPrecipProbabilityPct: 60, ww: 61, icon: 'rain', windMaxKmh: 18, gustMaxKmh: 30, riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z' }]
+};
+const acceptedWeather = runWeatherValidator({ value: JSON.stringify(weatherFixture) });
+check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1, 'Gültiges D-Bus-Wetter wird als Snapshot-Änderung übernommen');
+check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
+check(runWeatherValidator(JSON.stringify(weatherFixture)) === null, 'Identisches Wetter erzeugt keine zweite Snapshot-Aktualisierung');
+const retainedWeather = JSON.stringify(weatherStore.get('camperWeather'));
+check(runWeatherValidator(JSON.stringify({ ...weatherFixture, schema: 2 })) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültiges Wetterschema ersetzt den letzten gültigen Cache nicht');
+const incompleteWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0] }] };
+delete incompleteWeather.hourly[0].windDeg;
+check(runWeatherValidator(JSON.stringify(incompleteWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Fehlende Schemafelder werden nicht stillschweigend zu null normalisiert');
+const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0], t: 'not-a-date' }] };
+check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
+check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
+
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
 check(transitSymbols.length === 2, 'V2 bettet beide Transit-Liniensymbole updatefest ein');
 const transitHashes = transitSymbols.map(match => crypto.createHash('sha256').update(Buffer.from(match[1], 'base64')).digest('hex'));
 check(transitHashes[0] === 'f54f528af869c6f3cc2dec1a7b90ae730b6df1d431f67aeb55328ba1fd6aa605', 'Dunkles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
 check(transitHashes[1] === '2b67063319cdb66767cca2229996b9e6161a849eddd6b0941fb5f984cf1a594f', 'Helles Transit-Liniensymbol ist das transparente SYNC-Referenzasset mit FORD-Grill');
-check(dashboardV2Css.includes('padding: 0;') && dashboardV2Css.includes('border-radius: 0;') && dashboardV2Css.includes('.fs-app.design-v2.day { background: #edf2f4 !important; }'), 'V2 zeichnet Tag und Nacht ohne künstlichen Außenrahmen bis an alle vier Ecken');
+check(dashboardV2Css.includes('padding: 0;') && dashboardV2Css.includes('border-radius: 0;') && dashboardV2Css.includes('.fs-app.day { background: #edf2f4 !important; }'), 'V2 zeichnet Tag und Nacht ohne künstlichen Außenrahmen bis an alle vier Ecken');
 check(dashboardV2Markup.includes('id="cc2-close"') && dashboardV2Markup.includes('@click="v2Close"'), 'V2 besitzt oben rechts die dedizierte Schließen-/Zurück-Aktion');
 const v2CloseMethod = dashboard.match(/v2Close\(\)\{([^}]|\}(?!\s*,indevoltToggle))*\}/)?.[0] || '';
 check(v2CloseMethod.includes('window.history.back()') && v2CloseMethod.includes('window.close()') && v2CloseMethod.includes('window.location.replace'), 'V2-Schließen verwendet Verlauf, Fenster oder sichere Browsernavigation');
@@ -160,10 +293,10 @@ for (const id of ['inside_main', 'outside_left', 'outside_right', 'outside_rear'
   check(dashboard.includes(id), `V2-Lichtmodell nutzt reale Licht-ID ${id}`);
 }
 check(dashboardV2Markup.includes('v2ToggleZone(zone.key)') && dashboard.includes("v2ToggleZone(zone){"), 'V2-Lichtkarten schalten über den gemeinsamen Live-Helfer');
-check(dashboard.includes("this.lightToggle(light)") && dashboard.includes("this.highBeamToggle()"), 'V2-Licht und Fernlicht enden in den vorhandenen STAR-Power-Befehlen');
+check(dashboard.includes("this.lightToggle(item)") && dashboard.includes("this.highBeamToggle()"), 'V2-Licht und Fernlicht enden in den vorhandenen STAR-Power-Befehlen');
 check(dashboardV2Markup.includes("@click=\"v2ToggleZone('highbeam')\"") && dashboardV2Markup.includes(':disabled="!highBeam.outputOnline"'), 'Fernlicht CH3 ist per Foto und Karte schaltbar und bei fehlendem Ausgang gesperrt');
 check(dashboardV2Markup.includes('class="cc2-dimmer-range"') && dashboardV2Markup.includes('@change="v2Dim"'), 'V2 besitzt den permanenten Dimmer für die ausgewählte Zone');
-check(dashboard.includes("this.lightDim(light,event)"), 'V2-Dimmer verwendet den vorhandenen STAR-Power-Dimmbefehl');
+check(dashboard.includes("this.lightDim(this.v2SelectedLight,event)"), 'V2-Dimmer verwendet den vorhandenen STAR-Power-Dimmbefehl');
 for (const scene of ['camping', 'night', 'all_off']) check(dashboardV2Markup.includes(`v2Scene('${scene}')`), `V2-Lichtseite bietet reale Szene ${scene}`);
 
 check(dashboardV2Markup.includes("v2EnergyPane='power'") && dashboardV2Markup.includes("v2EnergyPane='sources'"), 'V2-Energie behält 12/230 V und Quellen als zwei Ansichten');
@@ -182,7 +315,7 @@ check(dashboard.includes("v2PageLabel(){return({home:'Home',lights:'Licht',clima
 check(dashboardV2Markup.includes('{{v2ChargerName(c)}}') && dashboard.includes("if(instance===278)return'MPPT 100/30 · 1'") && dashboard.includes("if(instance===279)return'MPPT 100/30 · 2'") && dashboard.includes("if(instance===290)return'MPPT 150/45'"), 'Solar-Detail verwendet die kurzen MPPT-Titel der Designquelle');
 
 check(dashboardV2Markup.includes('<strong>Klimaautomatik</strong>') && dashboardV2Markup.includes('<span>Autoterm</span>') && dashboardV2Markup.includes('<span>MaxxFan</span>'), 'Home erklärt Klimaautomatik mit Autoterm und MaxxFan eindeutig');
-check(dashboardV2Markup.includes('{{v2QuickName(q)}}') && dashboard.includes("'light:outside_front_white':'Tagfahrlicht'") && dashboard.includes("'light:outside_front_amber':'Warnlicht'"), 'Home kürzt die Schnellzugriffe auf Tagfahrlicht und Warnlicht');
+check(dashboardV2Markup.includes('{{v2QuickName(q)}}') && dashboard.includes("'light:outside_front_white':'Tagfahrlicht'") && dashboard.includes("'light:outside_front_amber':'Warnlicht'"), 'Favoriten kürzen Tagfahrlicht und Warnlicht konsistent');
 check(dashboardV2Markup.includes('v-for="minutes in [0,30,60,120]"') && dashboardV2Markup.includes('v2RuntimeOpen'), 'Autoterm-Zeitlimit bleibt optional');
 check(dashboardV2Markup.includes("v2RuntimeOpen?'Zeitlimit':'Zeitlimit hinzufügen'") && dashboardV2Markup.includes(":class=\"v2RuntimeOpen?'':'cc2-sr-only'\""), 'Autoterm zeigt das Zeitlimit erst nach ausdrücklicher Auswahl');
 check(!dashboardV2Markup.includes("v-for=\"m in ['auto','heat','cool']\""), 'Komfort enthält nur Sollwert und zentralen Auto-Schalter');
@@ -195,13 +328,13 @@ check(dashboardV2Markup.includes(':disabled="!s.water?.pump?.online"') && dashbo
 
 for (const frozen of ['35 W', '42,97', '42.97', '31 %', '29,7', '29.7', '7 / 10', 'v3.80']) check(!dashboardV2Markup.includes(frozen), `V2 enthält keinen eingefrorenen Prototypwert ${frozen}`);
 for (const redundant of ['Raumklima', 'Dieselheizung', 'Dachlüfter', 'Transit Lichtzonen']) check(!dashboardV2Markup.includes(redundant), `V2 vermeidet redundante Beschriftung ${redundant}`);
-check(dashboardV2Markup.includes("setDesignVersion('v1')") && dashboardV2Markup.includes("setDesignVersion('v2')"), 'V2-Systemseite bietet den persistenten Designwechsel');
+check(!dashboardV2Markup.includes('setDesignVersion') && !dashboardV2Markup.includes('Design V1'), 'V2-Systemseite enthält keinen alten Designumschalter');
 check(dashboardV2Markup.includes('@click="openVictron"') && dashboard.includes("window.location.hostname"), 'V2-Systemseite öffnet die originale Victron-Ansicht ohne erfundene API');
 check(dashboardV2Css.includes('grid-template-columns: repeat(6, 1fr)') && dashboardV2Css.includes('aspect-ratio: 5 / 3'), 'V2-CSS behält Touch-50-Seitenverhältnis und Sechsfachnavigation');
 check(dashboardV2Css.includes('.cc2-zone-card.is-on') && dashboardV2Css.includes('.cc2-photo-light.is-on::before'), 'V2-CSS zeigt Lichtstatus direkt an Karte und Fahrzeugfoto');
 const settingsDashboard = get('aec5cc044fa2963f').format || '';
-check(settingsDashboard.includes('class="design-picker"'), 'Separate Einstellungsseite bietet die Designauswahl an');
-check(settingsDashboard.includes("this.patch({ui:{designVersion:v}})"), 'Separate Einstellungsseite nutzt denselben Settings-Patch');
+check(!settingsDashboard.includes('class="design-picker"'), 'Separate Einstellungsseite enthält keinen V1/V2-Umschalter');
+check(!settingsDashboard.includes('designVersion'), 'Separate Einstellungsseite erzeugt keine V1-Payload');
 compileVueScript(dashboard, 'Camper-Dashboard');
 compileVueScript(settingsDashboard, 'Einstellungs-Dashboard');
 
@@ -218,7 +351,7 @@ const runSettings = new Function('msg', 'flow', 'context', 'node', 'env', 'RED',
 const migratedOutput = runSettings({ req: { method: 'GET' }, payload: {} }, legacyQuickFlow, {}, {}, {}, {});
 const migratedConfig = migratedOutput?.[1]?.payload?.config || {};
 check(migratedConfig.version === 5, 'v4-Konfiguration wird zur Laufzeit auf v5 migriert');
-check(migratedConfig.ui?.designVersion === 'v2', 'Bestehende Konfigurationen erhalten Design V2 als sicheren Standard');
+check(migratedConfig.ui?.designVersion === undefined, 'Bestehende Designauswahl wird bei der V2-Migration entfernt');
 check(JSON.stringify(migratedConfig.ui?.quickAccessIds) === JSON.stringify([
   'light:inside_main', 'light:outside_front_amber', 'light:outside_right', 'switch:high_beam_manual'
 ]), 'Bestehende vier Lichtbelegungen bleiben bei der Migration erhalten');
@@ -228,12 +361,9 @@ const designFlow = {
   get: key => designFile.get(key),
   set: (key, value) => designFile.set(key, value)
 };
-let designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, designFlow, {}, {}, {}, {});
-check(designOutput?.[0]?.payload?.config?.ui?.designVersion === 'v1', 'Settings-Patch schaltet auf Design V1');
-check(designFile.get('camperConfig')?.ui?.designVersion === 'v1', 'Design V1 wird im Datei-Kontext dauerhaft gespeichert');
-designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'unbekannt' } } } }, designFlow, {}, {}, {}, {});
-check(designOutput?.[0]?.payload?.config?.ui?.designVersion === 'v2', 'Ungültige Designwerte werden auf V2 normalisiert');
-check(designFile.get('camperConfig')?.ui?.designVersion === 'v2', 'Normalisierte Designauswahl wird dauerhaft gespeichert');
+const designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, designFlow, {}, {}, {}, {});
+check(designOutput?.[0]?.payload?.config?.ui?.designVersion === undefined, 'Settings-Patch kann V1 nicht wieder aktivieren');
+check(designFile.get('camperConfig')?.ui?.designVersion === undefined, 'V1-Auswahl wird nicht persistent gespeichert');
 
 const commandStore = new Map([['camperConfig', migratedConfig], ['camperCommands', []], ['camperWsClients', {}]]);
 const commandFlow = {
@@ -241,9 +371,32 @@ const commandFlow = {
   set: (key, value) => commandStore.set(key, value)
 };
 const runCommandRouter = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('6265bf6f9bade1e5').func || '');
-const designCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, commandFlow, {}, {}, {}, {});
-check(designCommandOutput?.[4]?.topic === 'ws.settings' && designCommandOutput?.[4]?.payload?.patch?.ui?.designVersion === 'v1', 'Designwechsel nutzt den vorhandenen Settings-Router');
-check([0, 1, 2, 3, 9, 11].every(index => designCommandOutput?.[index] == null), 'Designwechsel erzeugt keinen Hardwarebefehl');
+const settingsCommandOutput = runCommandRouter({ payload: { target: 'settings', action: 'patch', patch: { ui: { quickAccessIds: ['switch:water_pump'] } } } }, commandFlow, {}, {}, {}, {});
+check(settingsCommandOutput?.[4]?.topic === 'ws.settings' && settingsCommandOutput?.[4]?.payload?.patch?.ui?.quickAccessIds?.[0] === 'switch:water_pump', 'Favoritenauswahl nutzt den vorhandenen Settings-Router');
+check([0, 1, 2, 3, 9, 11].every(index => settingsCommandOutput?.[index] == null), 'Favoritenauswahl erzeugt keinen Hardwarebefehl');
+
+const runProtectedCommand = payload => {
+  const values = new Map([['camperConfig', migratedConfig], ['camperCommands', []], ['camperWsClients', {}]]);
+  const writes = [];
+  const flowApi = {
+    get: key => values.get(key),
+    set: (key, value) => { values.set(key, value); writes.push(key); }
+  };
+  const output = runCommandRouter(
+    { payload, req: {}, res: {}, _msgid: 'security-test' }, flowApi, {}, {}, {}, {}
+  );
+  return { output, values, writes };
+};
+const vrmStarlinkOff = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value: false });
+check(vrmStarlinkOff.output?.[5]?.statusCode === 400 && vrmStarlinkOff.output?.[5]?.payload?.error === 'remote_link_protection', 'VRM-Starlink-AUS wird mit remote_link_protection abgelehnt');
+check([0, 1, 2, 3, 9, 11].every(index => vrmStarlinkOff.output?.[index] == null), 'VRM-Starlink-AUS erreicht keinen Hardwareausgang');
+check(!vrmStarlinkOff.writes.includes('camperCommands'), 'Abgelehnter VRM-Linkbefehl erzeugt keinen persistenten Kommandoeintrag');
+const vrmStarlinkOn = runProtectedCommand({ origin: 'vrm', target: 'starpower', action: 'set', channel: 5, value: true });
+check(vrmStarlinkOn.output?.[0]?.[0]?.payload?.value === 1 && vrmStarlinkOn.output?.[5]?.statusCode === 202, 'VRM darf Starlink weiterhin einschalten');
+for (const origin of ['gx', 'sync', undefined]) {
+  const localOff = runProtectedCommand({ ...(origin ? { origin } : {}), target: 'starpower', action: 'set', channel: 5, value: false });
+  check(localOff.output?.[0]?.[0]?.payload?.value === 0 && localOff.output?.[5]?.statusCode === 202, `${origin || 'lokal'} darf Starlink ausschalten`);
+}
 
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
@@ -278,7 +431,7 @@ check(get('06b5677f5f5ddd99').path === '/Relay/1/State' && /Zuluft/.test(get('06
 check(ventilationController.func.includes("if (manualOn)"), 'Manueller Lüfterlauf hat Vorrang');
 check(ventilationController.func.includes('temperature <= onTemperature - hysteresis'), 'CPU-Lüftung besitzt eine Rückschalthysterese');
 check(get('ada9353cc6ea4a4c').func.includes('manualOn: ventilation.manualOn === true'), 'Snapshot veröffentlicht den Handbetrieb');
-check(dashboard.includes('LÜFTER MANUELL'), 'Dashboard besitzt einen manuellen Lüfterknopf');
+check(settingsDashboard.includes('Lüfter manuell dauerhaft EIN'), 'Manueller CPU-Lüfter bleibt in den Einstellungen erreichbar');
 
 const ventilationStore = new Map([
   ['camperConfig', { ventilation: { enabled: true, manualOn: false, onTemperature: 65, hysteresis: 5 } }]
@@ -364,6 +517,48 @@ const runStateAggregator = sensors => {
   );
   return result?.[0]?.payload;
 };
+
+// Dynamische Persistenzregression: Auch ein massiver identischer Burst darf
+// den großen Snapshot und die gebundenen UI-Ausgänge nur einmal markieren.
+// Der Core-Delay wird strukturell separat geprüft; hier wird die zweite
+// Schutzschicht des Aggregators direkt belastet.
+const burstNow = Date.now();
+const burstValues = new Map([['camperSensors', {
+  'battery.soc': { value: 74, seen: burstNow },
+  'battery.voltage': { value: 13.2, seen: burstNow },
+  'solar.total.power': { value: 318, seen: burstNow }
+}]]);
+const burstWrites = new Map();
+const burstFlow = {
+  get: key => burstValues.get(key),
+  set: (key, value) => {
+    burstValues.set(key, value);
+    burstWrites.set(key, Number(burstWrites.get(key) || 0) + 1);
+  }
+};
+const burstGlobalValues = new Map();
+const burstGlobal = {
+  get: key => burstGlobalValues.get(key),
+  set: (key, value) => burstGlobalValues.set(key, value)
+};
+const runBurstAggregator = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', 'global', stateAggregator);
+const originalDateNow = Date.now;
+let burstOutputs = 0;
+try {
+  Date.now = () => burstNow;
+  for (let index = 0; index < 500; index += 1) {
+    const output = runBurstAggregator(
+      { topic: 'burst' }, burstFlow, {}, { warn() {}, error() {}, status() {} }, {}, {}, burstGlobal
+    );
+    if (output) burstOutputs += 1;
+  }
+} finally {
+  Date.now = originalDateNow;
+}
+check(burstOutputs === 1, '500 identische Aggregator-Aufrufe erzeugen genau eine UI-Ausgabe');
+check(burstWrites.get('camperSnapshot') === 1, '500 identische Aggregator-Aufrufe persistieren den großen Snapshot genau einmal');
+check(Buffer.byteLength(JSON.stringify(burstValues.get('camperSnapshot')), 'utf8') < 256 * 1024, 'Dynamischer Snapshot bleibt unter dem 256-KiB-Limit');
+check(!burstGlobalValues.has('camper.snapshot'), 'Burst erzeugt keine redundante globale Snapshot-Kopie');
 const steadyNow = Date.now();
 const steadyOrion = runStateAggregator({
   'orion.mode': { value: 1, seen: steadyNow - 5 * 60 * 1000 },
@@ -405,8 +600,14 @@ check(warning.func.includes("msg.topic === 'front-warning-clock'"), 'Warnblink-C
 check(!warning.func.includes("msg.topic === 'dim:8'"), 'Warnblink-Takt verwendet keine Dimming-Bestätigung');
 check(!warning.func.includes('WARNING_LEVEL') && !warning.func.includes('dimming('), 'Warnblink-Controller erzeugt keine Dimming-Befehle');
 check(!warning.func.includes('SwitchableOutput/10') && !warning.func.includes('WARNING_CHANNEL = 11'), 'Warnblink-Controller kann CH 11 nicht ansprechen');
-check(starpowerCoalescer.type === 'trigger' && starpowerCoalescer.duration === '100' && starpowerCoalescer.extend === true, 'STAR-Power-Bursts werden per Core-Trigger 100 ms nachlaufend gebündelt');
-check(sensorCoalescer.type === 'trigger' && sensorCoalescer.duration === '150' && sensorCoalescer.extend === false, 'Sensor-Bursts werden per Core-Trigger höchstens alle 150 ms gebündelt');
+check(starpowerCoalescer.type === 'delay' && starpowerCoalescer.pauseType === 'rate', 'STAR-Power-Snapshot verwendet eine Core-Delay-Ratebegrenzung');
+check(starpowerCoalescer.rate === '1' && starpowerCoalescer.nbRateUnits === '1' && starpowerCoalescer.rateUnits === 'second' && starpowerCoalescer.drop === true, 'STAR-Power-Snapshot ist auf maximal 1/s mit Drop begrenzt');
+check(JSON.stringify(starpowerCoalescer.wires) === JSON.stringify([['cff2c4d32221ccd8']]), 'STAR-Power-Vorgate führt ausschließlich zum Gesamtgate');
+check(sensorCoalescer.type === 'delay' && sensorCoalescer.pauseType === 'rate', 'Gesamt-Snapshot verwendet eine Core-Delay-Ratebegrenzung');
+check(sensorCoalescer.rate === '2' && sensorCoalescer.nbRateUnits === '1' && sensorCoalescer.rateUnits === 'second' && sensorCoalescer.drop === true, 'Gesamt-Snapshot ist hart auf maximal 2/s mit Drop begrenzt');
+const aggregatorInputs = flows.filter(node => targetsOf(node.id).includes('ada9353cc6ea4a4c')).map(node => node.id);
+check(JSON.stringify(aggregatorInputs) === JSON.stringify(['cff2c4d32221ccd8']), 'Jeder Snapshot-Anlass durchläuft den einzigen gemeinsamen 2-Hz-Gate');
+check(JSON.stringify(sensorCoalescer.wires) === JSON.stringify([['ada9353cc6ea4a4c']]), 'Gesamtgate führt ausschließlich zum Snapshot-Aggregator');
 for (const coalescer of [starpowerCoalescer, sensorCoalescer, warningClock]) {
   check(!('func' in coalescer) && !('initialize' in coalescer) && !('finalize' in coalescer), `${coalescer.id} enthält keinen Function-/Context-Code`);
 }
@@ -477,8 +678,7 @@ check((get('camper_service_action_router').wires?.[8] || []).includes('external_
 check(get('6265bf6f9bade1e5').func.includes("'wifiConnect'"), 'Zentraler Router kennt wifiConnect');
 check(get('external_wifi_state_update').func.includes('source.wifi'), 'WLAN-Parser verarbeitet die verschachtelte Venus-Struktur');
 check(get('ada9353cc6ea4a4c').func.includes('externalWifi: externalWifiStatus'), 'Snapshot enthält strukturierten WLAN-Status');
-check(dashboard.includes('autocomplete="new-password"'), 'Dashboard nutzt ein nicht vorbefülltes WLAN-Passwortfeld');
-check(dashboard.includes("this.wifiPassphrase=''"), 'Dashboard löscht das WLAN-Passwort nach dem Senden');
+check(!dashboard.includes('wifiPassphrase') && !dashboard.includes('autocomplete="new-password"'), 'V2-Hauptdashboard hält keine WLAN-Zugangsdaten im Browserzustand');
 
 check(!sourceText.includes(':1881'), 'Node-RED-Flow enthält keinen HTTPS-Port 1881');
 for (const term of ['apiToken', 'x-camper-token', 'tokenConfigured', 'allowReadWithoutToken', 'stratificationWarning', 'stratification:']) {

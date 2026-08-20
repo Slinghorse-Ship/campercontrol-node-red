@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "campercontrol_weather.py"
@@ -63,6 +64,32 @@ def sample_kmz() -> bytes:
 
 
 class CamperControlWeatherTest(unittest.TestCase):
+    def test_dbus_parser_accepts_plain_and_value_formats_used_by_venus(self):
+        self.assertEqual(MODULE._parse_dbus_output("'com.victronenergy.gps.ve_ttyACM0'\n"), "com.victronenergy.gps.ve_ttyACM0")
+        self.assertEqual(MODULE._parse_dbus_output("0\n"), 0)
+        self.assertEqual(MODULE._parse_dbus_output("value = 51.2345\n"), 51.2345)
+        self.assertEqual(MODULE._parse_dbus_output("value = 'service'\n"), "service")
+        self.assertIsNone(MODULE._parse_dbus_output(""))
+        self.assertIsNone(MODULE._parse_dbus_output("Error: unavailable"))
+
+    def test_live_mixed_dbus_formats_produce_gps_fix_and_normalized_timezone(self):
+        values = {
+            ("com.victronenergy.system", "/GpsService"): "'com.victronenergy.gps.ve_ttyACM0'\n",
+            ("com.victronenergy.gps.ve_ttyACM0", "/Connected"): "value = 1\n",
+            ("com.victronenergy.gps.ve_ttyACM0", "/Fix"): "value = 1\n",
+            ("com.victronenergy.gps.ve_ttyACM0", "/Position/Latitude"): "value = 51.2345\n",
+            ("com.victronenergy.gps.ve_ttyACM0", "/Position/Longitude"): "value = 7.1234\n",
+            ("com.victronenergy.settings", "/Settings/System/TimeZone"): "'/UTC'\n",
+        }
+
+        def run(command, **_kwargs):
+            key = (command[2], command[3])
+            return type("Result", (), {"returncode": 0, "stdout": values[key]})()
+
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=run):
+            self.assertEqual(MODULE.read_gx_position(), (51.2345, 7.1234))
+            self.assertEqual(MODULE.read_gx_timezone(), "UTC")
+
     def test_station_catalog_converts_dwd_degree_minute_coordinates(self):
         stations = MODULE.parse_station_catalog(CATALOG)
         self.assertEqual([item.station_id for item in stations], ["10641", "10866"])
@@ -137,6 +164,7 @@ class CamperControlWeatherTest(unittest.TestCase):
             raw = (base / "weather.json").read_text(encoding="utf-8")
             self.assertNotIn("latitude", raw)
             self.assertNotIn("longitude", raw)
+            self.assertNotIn("distanceKm", raw)
             self.assertLessEqual(len(raw.encode("utf-8")), MODULE.MAX_SNAPSHOT_BYTES)
             self.assertEqual(len(downloads), 2)
             self.assertFalse(list(base.glob("*.kmz")))

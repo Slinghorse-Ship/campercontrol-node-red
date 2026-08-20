@@ -62,11 +62,9 @@ const html = (state, query) => {
   const allowedPanes = new Set(['power', 'sources', 'solar-detail']);
   const page = allowedPages.has(query.get('page')) ? query.get('page') : 'home';
   const pane = allowedPanes.has(query.get('pane')) ? query.get('pane') : 'power';
-  const design = query.get('design') === 'v1' ? 'v1' : 'v2';
   const dayMode = query.get('theme') === 'light';
-  const preview = JSON.stringify({ page, pane, design, dayMode }).replace(/</g, '\\u003c');
-  const previewState = { ...state, ui: { ...(state.ui || {}), designVersion: design } };
-  const snapshot = JSON.stringify(previewState).replace(/</g, '\\u003c');
+  const preview = JSON.stringify({ page, pane, dayMode }).replace(/</g, '\\u003c');
+  const snapshot = JSON.stringify(state).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>CamperControl V2 Preview</title>${styles}<style>html,body,#app{width:100%;height:100%;margin:0;overflow:hidden;background:#030609}</style></head>
 <body><div id="app">${outerTemplate}</div><script src="/vue.js"></script><script>window.__CAMPER_SNAPSHOT__=${snapshot};window.__CAMPER_PREVIEW__=${preview};${componentScript}
@@ -104,6 +102,6 @@ server.listen(port, '127.0.0.1', () => {
     readOnly: true,
     url: `http://127.0.0.1:${port}/`,
     cerboBase,
-    pages: ['home', 'lights', 'energy/power', 'energy/sources', 'energy/solar-detail', 'climate', 'v1/home']
+    pages: ['home', 'lights', 'energy/power', 'energy/sources', 'energy/solar-detail', 'climate', 'water', 'system']
   }, null, 2));
 });
