@@ -257,6 +257,8 @@ check(!/\b(?:Chart|Highcharts|Plotly|ECharts)\b/.test(dashboard), 'Wetterchart b
 check(dashboard.includes('this.s.weather') && dashboard.includes('hourly.slice(0,24)') && dashboard.includes('daily.slice(0,6)'), 'Wetterpanel liest genau 24 Stunden und sechs Tage aus state.weather');
 check(dashboardV2Markup.includes('<polyline v-if="v2WeatherTempPoints"') && dashboardV2Markup.includes('v-for="bar in v2WeatherRainBars"'), 'Wetterchart zeigt Temperaturkurve und Niederschlagswahrscheinlichkeit nativ als SVG');
 check(dashboardV2Markup.includes('Deutscher Wetterdienst (DWD)'), 'Wetterpanel zeigt die DWD-Attribution');
+const v2LightZoneOrder = [...((dashboard.match(/v2LightZones\(\)\{return\[(.*?)\]\}/) || [])[1] || '').matchAll(/key:'([^']+)'/g)].map(match => match[1]);
+check(JSON.stringify(v2LightZoneOrder) === JSON.stringify(['inside', 'rear', 'left', 'right']), 'Lichtmatrix ordnet oben Innen/Hinten und darunter Links/Rechts an');
 
 const weatherInput = get('weather_state_in');
 const weatherValidator = get('weather_state_validate');
@@ -284,12 +286,23 @@ const weatherFixture = {
   timezone: 'Europe/Berlin',
   sun: { date: '2026-08-20', riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z', origin: 'calculated' },
   hourly: [{ t: '2026-08-20T06:00:00Z', tempC: 18.2, precipProbabilityPct: 30, precipMm: 0.2, ww: 61, icon: 'rain', windKmh: 12, windDeg: 240, gustKmh: 24, latitude: 50.8 }],
-  daily: [{ date: '2026-08-20', minC: 12, maxC: 22, precipMm: 1.4, maxHourlyPrecipProbabilityPct: 60, ww: 61, icon: 'rain', windMaxKmh: 18, gustMaxKmh: 30, riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z' }]
+  daily: [{ date: '2026-08-20', minC: 12, maxC: 22, precipMm: 1.4, maxHourlyPrecipProbabilityPct: 60, ww: 61, icon: 'rain', windMaxKmh: 18, gustMaxKmh: 30, riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z' }],
+  tides: {
+    source: 'BSH', attribution: '© Bundesamt für Seeschifffahrt und Hydrographie (BSH)',
+    station: { id: 'cuxhaven_steubenhoeft', name: 'Cuxhaven, Steubenhöft', distanceKm: 12.4, latitude: 53.86, longitude: 8.71 },
+    updatedUtc: '2026-08-20T05:00:00Z', stale: false, referenceLevel: 'PNP',
+    nextHigh: { t: '2026-08-20T08:20:00Z', heightM: 7.31 },
+    nextLow: { t: '2026-08-20T14:35:00Z', heightM: 4.68 }
+  }
 };
 const acceptedWeather = runWeatherValidator({ value: JSON.stringify(weatherFixture) });
-check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1, 'Gültiges D-Bus-Wetter wird als Snapshot-Änderung übernommen');
-check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
+check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31, 'Gültiges D-Bus-Wetter samt Tide wird als Snapshot-Änderung übernommen');
+check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.longitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
 check(runWeatherValidator(JSON.stringify(weatherFixture)) === null, 'Identisches Wetter erzeugt keine zweite Snapshot-Aktualisierung');
+const invalidTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 61 } } };
+const acceptedWithoutInvalidTides = runWeatherValidator(JSON.stringify(invalidTides));
+check(acceptedWithoutInvalidTides?.payload?.schema === 1 && acceptedWithoutInvalidTides.payload.tides === undefined, 'Ungültige oder zu weit entfernte Tide wird fail-closed entfernt, ohne DWD-Wetter zu blockieren');
+check(runWeatherValidator(JSON.stringify(weatherFixture))?.payload?.tides?.station?.id === 'cuxhaven_steubenhoeft', 'Nach einer ungültigen Tide kann der nächste gültige BSH-Zustand wieder übernommen werden');
 const retainedWeather = JSON.stringify(weatherStore.get('camperWeather'));
 check(runWeatherValidator(JSON.stringify({ ...weatherFixture, schema: 2 })) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültiges Wetterschema ersetzt den letzten gültigen Cache nicht');
 const incompleteWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0] }] };

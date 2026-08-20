@@ -194,11 +194,36 @@ const daily = source.daily.map(item => object(item) ? {
 } : null);
 const validValues = value => object(value) && !Object.values(value).some(item => typeof item === 'undefined');
 if (!validValues(station) || !validValues(sun) || !hourly.every(validValues) || !daily.every(validValues)) return reject('Wetterfeld ungültig');
+let tides;
+if (own(source, 'tides') && source.tides != null) {
+    const tideSource = source.tides;
+    const tideStation = object(tideSource) && object(tideSource.station) ? {
+        id: required(tideSource.station, 'id', value => string(value, 64)),
+        name: required(tideSource.station, 'name', value => string(value, 160)),
+        distanceKm: required(tideSource.station, 'distanceKm', value => number(value, 0, 60))
+    } : null;
+    const tideEvent = item => object(item) ? {
+        t: required(item, 't', timestamp),
+        heightM: required(item, 'heightM', value => number(value, -200, 200))
+    } : null;
+    const candidate = object(tideSource) ? {
+        source: required(tideSource, 'source', value => string(value, 64)),
+        attribution: required(tideSource, 'attribution', value => string(value, 256)),
+        station: tideStation,
+        updatedUtc: required(tideSource, 'updatedUtc', timestamp),
+        stale: tideSource.stale,
+        referenceLevel: required(tideSource, 'referenceLevel', value => value === 'PNP' ? value : undefined),
+        nextHigh: tideEvent(tideSource.nextHigh),
+        nextLow: tideEvent(tideSource.nextLow)
+    } : null;
+    if (validValues(candidate) && validValues(tideStation) && validValues(candidate.nextHigh) && validValues(candidate.nextLow) && typeof candidate.stale === 'boolean') tides = candidate;
+}
 const weather = {
     schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)), station,
     modelRunUtc: required(source, 'modelRunUtc', value => timestamp(value, true)), fetchedAtUtc: required(source, 'fetchedAtUtc', timestamp), stale: source.stale,
     timezone: required(source, 'timezone', value => string(value, 64)), sun, hourly, daily
 };
+if (tides) weather.tides = tides;
 if (!validValues(weather) || typeof weather.stale !== 'boolean') return reject('Metadaten ungültig');
 const canonical = JSON.stringify(weather);
 if (Buffer.byteLength(canonical, 'utf8') > MAX_BYTES) return reject('normalisiert >16 KiB');
