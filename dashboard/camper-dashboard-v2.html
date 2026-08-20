@@ -211,14 +211,15 @@
         <header class="cc2-panel-header"><div><small>DWD · MOSMIX</small><h2>Wetter</h2></div><button class="cc2-panel-close" type="button" aria-label="Wetter schließen" @click="v2ClosePanel"><svg class="cc2-light-icon"><use href="#cc2-close"></use></svg></button></header>
         <template v-if="v2Weather">
           <div class="cc2-weather-summary"><span class="cc2-weather-icon" aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(v2WeatherHourly[0]?.icon)"></use></svg></span><div><strong>{{fmt(v2WeatherHourly[0]?.tempC,1)}}°</strong><small>{{v2WeatherStation}}</small></div><span :class="['cc2-weather-freshness',v2Weather.stale?'is-stale':'']">{{v2Weather.stale?'Veraltet':v2WeatherUpdated}}</span></div>
-          <div class="cc2-weather-chart" aria-label="Temperatur und Niederschlagswahrscheinlichkeit der nächsten 24 Stunden">
+          <div class="cc2-weather-chart" aria-label="Temperatur, Niederschlagswahrscheinlichkeit und optionale Tide der nächsten 24 Stunden">
             <svg viewBox="0 0 400 150" role="img">
               <line x1="10" y1="140" x2="390" y2="140" class="cc2-chart-axis"></line>
               <rect v-for="bar in v2WeatherRainBars" :key="bar.key" :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height" class="cc2-chart-rain"></rect>
               <polyline v-if="v2WeatherTempPoints" :points="v2WeatherTempPoints" class="cc2-chart-temp"></polyline>
+              <polyline v-if="v2TidePoints" :points="v2TidePoints" class="cc2-chart-tide"></polyline>
               <g v-for="label in v2WeatherChartLabels" :key="label.key"><text :x="label.x" y="148" text-anchor="middle">{{label.hour}}</text><text :x="label.x" :y="label.y" text-anchor="middle" class="cc2-chart-temp-label">{{label.temp}}°</text></g>
             </svg>
-            <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regenrisiko</span></div>
+            <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regenrisiko</span><span v-if="v2TidePoints"><i class="cc2-legend-tide"></i>Tide</span></div>
           </div>
           <div class="cc2-weather-days"><article v-for="day in v2WeatherDaily" :key="day.date" class="cc2-weather-day"><small>{{v2WeatherDay(day.date)}}</small><span aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(day.icon)"></use></svg></span><strong>{{fmt(day.maxC,0)}}°</strong><em>{{fmt(day.minC,0)}}°</em><b>{{fmt(day.maxHourlyPrecipProbabilityPct,0)}} %</b></article></div>
           <div v-if="v2SunText||v2TideText" class="cc2-weather-sun-tide"><span v-if="v2SunText">{{v2SunText}}</span><span v-if="v2TideText" :class="v2Tides&&v2Tides.stale?'is-stale':''">{{v2TideText}}</span></div>

@@ -206,6 +206,18 @@ if (own(source, 'tides') && source.tides != null) {
         t: required(item, 't', timestamp),
         heightM: required(item, 'heightM', value => number(value, -200, 200))
     } : null;
+    let tideCurve;
+    let tideCurveValid = true;
+    if (object(tideSource) && own(tideSource, 'curve')) {
+        tideCurveValid = Array.isArray(tideSource.curve) && tideSource.curve.length >= 2 && tideSource.curve.length <= 25;
+        if (tideCurveValid) {
+            tideCurve = tideSource.curve.map(item => object(item) ? {
+                t: required(item, 't', timestamp),
+                heightM: required(item, 'heightM', value => number(value, -200, 200, false))
+            } : null);
+            tideCurveValid = tideCurve.every(item => validValues(item) && Number.isFinite(item.heightM)) && tideCurve.every((item, index) => index === 0 || Date.parse(item.t) > Date.parse(tideCurve[index - 1].t));
+        }
+    }
     const candidate = object(tideSource) ? {
         source: required(tideSource, 'source', value => value === 'BSH' ? value : undefined),
         attribution: required(tideSource, 'attribution', value => string(value, 256)),
@@ -216,7 +228,8 @@ if (own(source, 'tides') && source.tides != null) {
         nextHigh: tideEvent(tideSource.nextHigh),
         nextLow: tideEvent(tideSource.nextLow)
     } : null;
-    if (validValues(candidate) && validValues(tideStation) && validValues(candidate.nextHigh) && validValues(candidate.nextLow) && typeof candidate.stale === 'boolean') tides = candidate;
+    if (candidate && tideCurve !== undefined) candidate.curve = tideCurve;
+    if (tideCurveValid && validValues(candidate) && validValues(tideStation) && validValues(candidate.nextHigh) && validValues(candidate.nextLow) && typeof candidate.stale === 'boolean') tides = candidate;
 }
 const weather = {
     schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)), station,

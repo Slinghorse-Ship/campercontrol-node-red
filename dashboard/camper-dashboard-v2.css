@@ -982,12 +982,14 @@
 #campercontrol-v2-horizon .cc2-chart-axis { stroke: light-dark(#cbd8dd, #31434e); stroke-width: 1; }
 #campercontrol-v2-horizon .cc2-chart-rain { fill: #36b8ff55; }
 #campercontrol-v2-horizon .cc2-chart-temp { fill: none; stroke: #ffad3e; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+#campercontrol-v2-horizon .cc2-chart-tide { fill: none; stroke: #34d2df; stroke-width: 2; stroke-dasharray: 5 3; stroke-linejoin: round; stroke-linecap: round; }
 #campercontrol-v2-horizon .cc2-chart-temp-label { fill: light-dark(#9a5700, #ffc26e); font-weight: 700; }
 #campercontrol-v2-horizon .cc2-weather-legend { display: flex; justify-content: flex-end; gap: 12px; color: light-dark(#60727c, #899daa); font-size: 7.5px; }
 #campercontrol-v2-horizon .cc2-weather-legend span { display: flex; align-items: center; gap: 4px; }
 #campercontrol-v2-horizon .cc2-weather-legend i { width: 10px; height: 3px; border-radius: 3px; }
 #campercontrol-v2-horizon .cc2-legend-temp { background: #ffad3e; }
 #campercontrol-v2-horizon .cc2-legend-rain { background: #36b8ff88; }
+#campercontrol-v2-horizon .cc2-legend-tide { background: #34d2df; }
 #campercontrol-v2-horizon .cc2-weather-days { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 5px; }
 #campercontrol-v2-horizon .cc2-weather-day { min-width: 0; padding: 7px 4px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 2px 4px; border-radius: 11px; background: light-dark(#eef4f6, #14232d); text-align: center; }
 #campercontrol-v2-horizon .cc2-weather-day small { grid-column: 1/-1; color: light-dark(#60727c, #899daa); font-size: 8px; font-weight: 700; text-transform: uppercase; }

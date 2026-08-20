@@ -292,11 +292,16 @@ const weatherFixture = {
     station: { id: 'cuxhaven_steubenhoeft', name: 'Cuxhaven, Steubenhöft', distanceKm: 12.4, latitude: 53.86, longitude: 8.71 },
     updatedUtc: '2026-08-20T05:00:00Z', stale: false, referenceLevel: 'PNP',
     nextHigh: { t: '2026-08-20T08:20:00Z', heightM: 7.31 },
-    nextLow: { t: '2026-08-20T14:35:00Z', heightM: 4.68 }
+    nextLow: { t: '2026-08-20T14:35:00Z', heightM: 4.68 },
+    curve: [
+      { t: '2026-08-20T06:00:00Z', heightM: 5.8 },
+      { t: '2026-08-20T07:00:00Z', heightM: 6.7 },
+      { t: '2026-08-20T08:00:00Z', heightM: 7.3 }
+    ]
   }
 };
 const acceptedWeather = runWeatherValidator({ value: JSON.stringify(weatherFixture) });
-check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31, 'Gültiges D-Bus-Wetter samt Tide wird als Snapshot-Änderung übernommen');
+check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31 && acceptedWeather.payload.tides.curve.length === 3, 'Gültiges D-Bus-Wetter samt kompakter Tidekurve wird als Snapshot-Änderung übernommen');
 check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.longitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
 check(runWeatherValidator(JSON.stringify(weatherFixture)) === null, 'Identisches Wetter erzeugt keine zweite Snapshot-Aktualisierung');
 const nullHeightTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, nextLow: { ...weatherFixture.tides.nextLow, heightM: null } } };
@@ -305,6 +310,12 @@ const wrongTideSource = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:02Z
 check(runWeatherValidator(JSON.stringify(wrongTideSource))?.payload?.tides === undefined, 'Nur der explizite BSH-Tidevertrag wird akzeptiert');
 const invalidTideTime = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:03Z', tides: { ...weatherFixture.tides, nextHigh: { ...weatherFixture.tides.nextHigh, t: 'not-a-date' } } };
 check(runWeatherValidator(JSON.stringify(invalidTideTime))?.payload?.tides === undefined, 'Ungültige BSH-Ereigniszeit wird fail-closed entfernt');
+const oversizedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:04Z', tides: { ...weatherFixture.tides, curve: Array.from({ length: 26 }, (_, index) => ({ t: new Date(Date.UTC(2026, 7, 20, 6 + index)).toISOString(), heightM: 5 })) } };
+check(runWeatherValidator(JSON.stringify(oversizedTideCurve))?.payload?.tides === undefined, 'Mehr als 25 Tidepunkte werden ressourcenschonend verworfen');
+const unsortedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:05Z', tides: { ...weatherFixture.tides, curve: [...weatherFixture.tides.curve].reverse() } };
+check(runWeatherValidator(JSON.stringify(unsortedTideCurve))?.payload?.tides === undefined, 'Nicht chronologische Tidepunkte werden verworfen');
+const nullTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:06Z', tides: { ...weatherFixture.tides, curve: weatherFixture.tides.curve.map((point, index) => index === 1 ? { ...point, heightM: null } : point) } };
+check(runWeatherValidator(JSON.stringify(nullTideCurve))?.payload?.tides === undefined, 'Tidekurven erfinden für fehlende Höhen keinen Nullpegel');
 const invalidTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 61 } } };
 const acceptedWithoutInvalidTides = runWeatherValidator(JSON.stringify(invalidTides));
 check(acceptedWithoutInvalidTides?.payload?.schema === 1 && acceptedWithoutInvalidTides.payload.tides === undefined, 'Ungültige oder zu weit entfernte Tide wird fail-closed entfernt, ohne DWD-Wetter zu blockieren');
@@ -317,7 +328,7 @@ check(runWeatherValidator(JSON.stringify(incompleteWeather)) === null && JSON.st
 const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0], t: 'not-a-date' }] };
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
-check(dashboard.includes('v2Tides') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne und den getrennt validierten BSH-HW/NW-Status');
+check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die optionale 24-h-Tidekurve');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
