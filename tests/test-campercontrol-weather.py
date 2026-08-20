@@ -236,6 +236,31 @@ class CamperControlWeatherTest(unittest.TestCase):
             cache.write_bytes(b" " * (MODULE.MAX_TIDE_CACHE_BYTES + 1))
             self.assertIsNone(MODULE.load_json_limited(cache, MODULE.MAX_TIDE_CACHE_BYTES))
 
+    def test_local_weather_catalog_and_station_files_fail_closed_when_oversized(self):
+        now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            weather = base / "weather.json"
+            catalog = base / "stations.cfg"
+            manual = base / "manual.conf"
+            weather.write_bytes(b" " * (MODULE.MAX_SNAPSHOT_BYTES + 1))
+            catalog.write_bytes(b"x" * (MODULE.MAX_CATALOG_BYTES + 1))
+            manual.write_bytes(b"10641\n" + b"x" * MODULE.MAX_STATION_CONFIG_BYTES)
+
+            provider = MODULE.WeatherProvider(
+                cache_path=weather,
+                catalog_path=catalog,
+                station_config_path=manual,
+                download=lambda _url, _maximum: (_ for _ in ()).throw(OSError("offline")),
+                now=lambda: now,
+            )
+            self.assertIsNone(provider.cached())
+            self.assertEqual(provider._manual_station_id(), "")
+            with mock.patch.object(MODULE, "_decode_catalog") as decode_catalog:
+                with self.assertRaises(RuntimeError):
+                    provider._catalog()
+            decode_catalog.assert_not_called()
+
     def test_mosmix_parser_and_snapshot_use_exact_transport_contract(self):
         model_run, name, series, times = MODULE.parse_mosmix_kmz(sample_kmz())
         self.assertEqual(model_run, "2026-08-18T21:00:00Z")

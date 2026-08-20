@@ -7,5 +7,4 @@ LOG=/data/log/campercontrol-node-red-restart.log
     svc -d /service/node-red-venus
     sleep 3
     svc -u /service/node-red-venus
-} >> "$LOG" 2>&1
-
+} > "$LOG" 2>&1

@@ -58,6 +58,7 @@ MAX_CATALOG_BYTES = 2 * 1024 * 1024
 MAX_KMZ_BYTES = 1024 * 1024
 MAX_KML_BYTES = 4 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 16 * 1024
+MAX_STATION_CONFIG_BYTES = 128
 MAX_TIDE_HITS_BYTES = 16 * 1024
 MAX_TIDE_DISCOVERY_PAGE_BYTES = 1536 * 1024
 MAX_TIDE_DISCOVERY_TOTAL_BYTES = 4 * 1024 * 1024
@@ -853,11 +854,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 
 def load_json(path: Path) -> dict[str, Any] | None:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
+    return load_json_limited(path, MAX_SNAPSHOT_BYTES)
 
 
 def _read_limited(path: Path, maximum_bytes: int) -> bytes:
@@ -1201,7 +1198,7 @@ class WeatherProvider:
         cached_stations: list[Station] | None = None
         cache_is_fresh = False
         try:
-            cached = _decode_catalog(self.catalog_path.read_bytes())
+            cached = _decode_catalog(_read_limited(self.catalog_path, MAX_CATALOG_BYTES))
             cached_stations = parse_station_catalog(cached)
             cache_is_fresh = self.now().timestamp() - self.catalog_path.stat().st_mtime < CATALOG_REFRESH_SECONDS
         except (OSError, UnicodeDecodeError, ValueError):
@@ -1431,8 +1428,11 @@ class WeatherProvider:
         configured = os.environ.get("CAMPER_WEATHER_STATION", "").strip()
         if not configured:
             try:
-                configured = self.station_config_path.read_text(encoding="ascii").splitlines()[0].strip()
-            except (OSError, IndexError, UnicodeError):
+                configured = _read_limited(
+                    self.station_config_path,
+                    MAX_STATION_CONFIG_BYTES,
+                ).decode("ascii").splitlines()[0].strip()
+            except (OSError, IndexError, UnicodeError, ValueError):
                 configured = ""
         return configured if re.fullmatch(r"[A-Za-z0-9]{5}", configured) else ""
 

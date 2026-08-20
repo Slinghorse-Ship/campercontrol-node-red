@@ -36,4 +36,4 @@ trap cleanup EXIT INT TERM
     [ "$found" -eq 1 ] && hciconfig -a 2>/dev/null || echo "no bluetooth adapter found"
     svstat /service/dbus-ble-sensors 2>/dev/null || true
     echo "$(date -Iseconds 2>/dev/null || date) bluetooth repair finished"
-} >> "$LOG" 2>&1
+} > "$LOG" 2>&1

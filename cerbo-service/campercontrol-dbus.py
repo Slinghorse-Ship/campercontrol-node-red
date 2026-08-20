@@ -37,6 +37,8 @@ STATE_ERROR_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0)
 STATUS_HEARTBEAT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 2.0
 MAX_COMMAND_BYTES = 16 * 1024
+MAX_COMMAND_RESPONSE_BYTES = 64 * 1024
+MAX_STATE_RESPONSE_BYTES = 320 * 1024
 MAX_FRAGMENT_BYTES = 128 * 1024
 STATE_SECTIONS = ("ui", "energy", "water", "climate", "lights", "vehicle", "power", "operations")
 
@@ -116,7 +118,14 @@ def validate_command_payload(raw_value: Any) -> tuple[str, dict[str, Any]]:
     return canonical, body
 
 
-def _http_json(url: str, method: str = "GET", body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _http_json(
+    url: str,
+    maximum_bytes: int,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if maximum_bytes <= 0:
+        raise ValueError("API response size limit must be positive")
     payload = None
     headers: dict[str, str] = {"Accept": "application/json"}
     if body is not None:
@@ -124,7 +133,18 @@ def _http_json(url: str, method: str = "GET", body: dict[str, Any] | None = None
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=payload, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-        decoded = json.loads(response.read().decode("utf-8"))
+        declared_header = response.headers.get("Content-Length")
+        if declared_header not in (None, ""):
+            try:
+                declared = int(declared_header)
+            except (TypeError, ValueError) as error:
+                raise ValueError("API response has invalid Content-Length") from error
+            if declared < 0 or declared > maximum_bytes:
+                raise ValueError(f"API response exceeds {maximum_bytes} bytes")
+        response_payload = response.read(maximum_bytes + 1)
+    if len(response_payload) > maximum_bytes:
+        raise ValueError(f"API response exceeds {maximum_bytes} bytes")
+    decoded = json.loads(response_payload.decode("utf-8"))
     if not isinstance(decoded, dict):
         raise ValueError("API response must be an object")
     return decoded
@@ -157,6 +177,9 @@ class CamperControlBridge:
         self._service = service_class(SERVICE_NAME, register=False)
         self._commands: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=32)
         self._stop = threading.Event()
+        self._state_delivery_lock = threading.Lock()
+        self._pending_state_delivery: tuple[str, Any] | None = None
+        self._state_delivery_scheduled = False
         self._last_fragments: dict[str, str] = {}
         self._last_weather = ""
         self._last_status_update = 0
@@ -238,6 +261,45 @@ class CamperControlBridge:
                 self._last_error = message
         return False
 
+    def _queue_state_delivery(self, kind: str, payload: Any) -> None:
+        """Coalesce worker updates into at most one outstanding GLib callback."""
+        if kind not in ("state", "error"):
+            raise ValueError("unknown state delivery kind")
+        with self._state_delivery_lock:
+            self._pending_state_delivery = (kind, payload)
+            if self._state_delivery_scheduled:
+                return
+            self._state_delivery_scheduled = True
+        try:
+            self._glib.idle_add(self._drain_state_delivery)
+        except Exception:
+            with self._state_delivery_lock:
+                self._state_delivery_scheduled = False
+            raise
+
+    def _drain_state_delivery(self) -> bool:
+        with self._state_delivery_lock:
+            delivery = self._pending_state_delivery
+            self._pending_state_delivery = None
+            if delivery is None:
+                self._state_delivery_scheduled = False
+                return False
+
+        kind, payload = delivery
+        try:
+            if kind == "state":
+                self._apply_state(payload)
+            else:
+                self._apply_error(payload)
+        except Exception:  # keep the single GLib source usable after D-Bus errors
+            logging.exception("failed to publish CamperControl %s update", kind)
+
+        with self._state_delivery_lock:
+            if self._pending_state_delivery is not None:
+                return True
+            self._state_delivery_scheduled = False
+            return False
+
     def _apply_command_result(self, result: dict[str, Any]) -> bool:
         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         self._service["/LastCommandResult"] = encoded
@@ -271,14 +333,17 @@ class CamperControlBridge:
         while not self._stop.is_set():
             started = time.monotonic()
             try:
-                packet = _http_json(f"{API_BASE}/state")
+                packet = _http_json(
+                    f"{API_BASE}/state",
+                    maximum_bytes=MAX_STATE_RESPONSE_BYTES,
+                )
                 state = packet.get("state", packet)
                 fragments = compact_state(state)
-                self._glib.idle_add(self._apply_state, fragments)
+                self._queue_state_delivery("state", fragments)
                 failure_index = 0
                 delay = max(0.05, POLL_SECONDS - (time.monotonic() - started))
             except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError) as error:
-                self._glib.idle_add(self._apply_error, f"Camper API: {error}")
+                self._queue_state_delivery("error", f"Camper API: {error}")
                 delay = STATE_ERROR_BACKOFF_SECONDS[min(failure_index, len(STATE_ERROR_BACKOFF_SECONDS) - 1)]
                 failure_index += 1
             self._stop.wait(delay)
@@ -290,7 +355,12 @@ class CamperControlBridge:
             except queue.Empty:
                 continue
             try:
-                result = _http_json(f"{API_BASE}/command", method="POST", body=body)
+                result = _http_json(
+                    f"{API_BASE}/command",
+                    maximum_bytes=MAX_COMMAND_RESPONSE_BYTES,
+                    method="POST",
+                    body=body,
+                )
             except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError) as error:
                 result = {
                     "ok": False,

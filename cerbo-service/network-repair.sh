@@ -33,4 +33,4 @@ trap 'rm -f "$LOCK"' EXIT INT TERM
     fi
     echo "default route: $(ip -4 route show default 2>/dev/null | head -n 1)"
     echo "$(date -Iseconds 2>/dev/null || date) network repair finished"
-} >> "$LOG" 2>&1
+} > "$LOG" 2>&1

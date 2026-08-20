@@ -9,6 +9,15 @@ from unittest import mock
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "campercontrol-dbus.py"
 INSTALLER_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "install-campercontrol-dbus.sh"
+LOG_SCRIPT_PATHS = tuple(
+    pathlib.Path(__file__).parents[1] / "cerbo-service" / name
+    for name in (
+        "network-repair.sh",
+        "bluetooth-repair.sh",
+        "node-red-restart.sh",
+        "cerbo-reboot.sh",
+    )
+)
 SPEC = importlib.util.spec_from_file_location("campercontrol_dbus", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -16,6 +25,99 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CamperControlDbusContractTest(unittest.TestCase):
+    def test_local_api_reader_enforces_content_length_and_read_limit_before_json(self):
+        class FakeResponse:
+            def __init__(self, payload, content_length=None):
+                self.payload = payload
+                self.headers = {}
+                if content_length is not None:
+                    self.headers["Content-Length"] = str(content_length)
+                self.read_limits = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, maximum):
+                self.read_limits.append(maximum)
+                return self.payload[:maximum]
+
+        maximum = 64
+        exact_payload = b'{"ok":true}' + b" " * (maximum - len(b'{"ok":true}'))
+        exact = FakeResponse(exact_payload, maximum)
+        with mock.patch.object(MODULE.urllib.request, "urlopen", return_value=exact):
+            self.assertEqual(MODULE._http_json("http://127.0.0.1/exact", maximum), {"ok": True})
+        self.assertEqual(exact.read_limits, [maximum + 1])
+
+        declared_oversize = FakeResponse(b'{}', maximum + 1)
+        with mock.patch.object(MODULE.urllib.request, "urlopen", return_value=declared_oversize):
+            with mock.patch.object(MODULE.json, "loads") as loads:
+                with self.assertRaises(ValueError):
+                    MODULE._http_json("http://127.0.0.1/declared", maximum)
+        self.assertEqual(declared_oversize.read_limits, [])
+        loads.assert_not_called()
+
+        streamed_oversize = FakeResponse(b"x" * (maximum + 1))
+        with mock.patch.object(MODULE.urllib.request, "urlopen", return_value=streamed_oversize):
+            with mock.patch.object(MODULE.json, "loads") as loads:
+                with self.assertRaises(ValueError):
+                    MODULE._http_json("http://127.0.0.1/streamed", maximum)
+        self.assertEqual(streamed_oversize.read_limits, [maximum + 1])
+        loads.assert_not_called()
+
+    def test_state_delivery_coalesces_one_thousand_updates_into_one_glib_callback(self):
+        class FakeGlib:
+            def __init__(self):
+                self.callbacks = []
+
+            def idle_add(self, callback):
+                self.callbacks.append(callback)
+                return len(self.callbacks)
+
+        bridge = MODULE.CamperControlBridge.__new__(MODULE.CamperControlBridge)
+        bridge._glib = FakeGlib()
+        bridge._state_delivery_lock = MODULE.threading.Lock()
+        bridge._pending_state_delivery = None
+        bridge._state_delivery_scheduled = False
+        bridge._apply_state = mock.Mock(return_value=False)
+        bridge._apply_error = mock.Mock(return_value=False)
+
+        for index in range(999):
+            bridge._queue_state_delivery("state", {"ui": str(index)})
+        bridge._queue_state_delivery("error", "latest")
+
+        self.assertEqual(len(bridge._glib.callbacks), 1)
+        self.assertFalse(bridge._glib.callbacks[0]())
+        bridge._apply_state.assert_not_called()
+        bridge._apply_error.assert_called_once_with("latest")
+        self.assertFalse(bridge._state_delivery_scheduled)
+
+        bridge._queue_state_delivery("state", {"ui": "new"})
+        self.assertEqual(len(bridge._glib.callbacks), 2)
+
+    def test_maintenance_logs_are_overwritten_on_every_invocation(self):
+        for script_path in LOG_SCRIPT_PATHS:
+            with self.subTest(script=script_path.name):
+                source = script_path.read_text(encoding="utf-8")
+                self.assertNotRegex(source, r">>\s*(?:\"\$LOG\"|/data/log/)")
+                if script_path.name == "cerbo-reboot.sh":
+                    self.assertRegex(source, r">\s*/data/log/campercontrol-cerbo-reboot\.log")
+                else:
+                    self.assertRegex(source, r"}\s*>\s*\"\$LOG\"\s*2>&1")
+
+        # Model two invocations using the redirect operator required above:
+        # the second run replaces, rather than grows, the first run's output.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = pathlib.Path(directory) / "service.log"
+            for marker in (b"first\n", b"second\n"):
+                with log_path.open("wb") as handle:
+                    handle.write(marker)
+            self.assertEqual(log_path.read_bytes(), b"second\n")
+
     def test_installer_does_not_terminate_a_just_started_service(self):
         source = INSTALLER_PATH.read_text(encoding="utf-8")
         self.assertIn("service_was_up=0", source)
@@ -159,6 +261,9 @@ class CamperControlDbusContractTest(unittest.TestCase):
         bridge = MODULE.CamperControlBridge.__new__(MODULE.CamperControlBridge)
         bridge._stop = FakeStop()
         bridge._glib = FakeGlib()
+        bridge._state_delivery_lock = MODULE.threading.Lock()
+        bridge._pending_state_delivery = None
+        bridge._state_delivery_scheduled = False
         with mock.patch.object(MODULE, "_http_json", side_effect=OSError("timeout")):
             bridge._state_worker()
         self.assertEqual(bridge._stop.waits, [1.0, 2.0, 5.0, 10.0])
