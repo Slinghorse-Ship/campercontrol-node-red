@@ -8,6 +8,7 @@ from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "campercontrol-dbus.py"
+INSTALLER_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "install-campercontrol-dbus.sh"
 SPEC = importlib.util.spec_from_file_location("campercontrol_dbus", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -15,6 +16,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CamperControlDbusContractTest(unittest.TestCase):
+    def test_installer_does_not_terminate_a_just_started_service(self):
+        source = INSTALLER_PATH.read_text(encoding="utf-8")
+        self.assertIn("service_was_up=0", source)
+        self.assertIn('if [ "$service_was_up" -eq 1 ]; then', source)
+        start_invocation = source.index('\n"$START_LINE"\n')
+        self.assertLess(source.index("service_was_up=0"), start_invocation)
+        self.assertLess(start_invocation, source.index('svc -t "$SERVICE_LINK"'))
+        self.assertNotIn(
+            'svc -t "$SERVICE_LINK" >/dev/null 2>&1 || svc -u "$SERVICE_LINK"',
+            source,
+        )
+
     def test_weather_is_separate_read_only_changed_only_path(self):
         class FakeService:
             def __init__(self, _name, register=False):
