@@ -19,10 +19,17 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+SERVICE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if SERVICE_DIRECTORY not in sys.path:
+    sys.path.insert(0, SERVICE_DIRECTORY)
+
+from campercontrol_weather import MAX_SNAPSHOT_BYTES as MAX_WEATHER_BYTES
+from campercontrol_weather import RETRY_SECONDS, REFRESH_SECONDS, WeatherProvider
+
 
 SERVICE_NAME = "com.victronenergy.campercontrol"
 DEVICE_INSTANCE = 0
-SERVICE_VERSION = "1.0.0"
+SERVICE_VERSION = "1.1.0"
 API_BASE = "http://127.0.0.1:1880/camper/api/v2"
 POLL_SECONDS = 1.0
 HTTP_TIMEOUT_SECONDS = 2.0
@@ -145,6 +152,8 @@ class CamperControlBridge:
         self._commands: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=32)
         self._stop = threading.Event()
         self._last_fragments: dict[str, str] = {}
+        self._last_weather = ""
+        self._weather = WeatherProvider()
 
         self._service.add_mandatory_paths(
             processname=__file__,
@@ -163,6 +172,9 @@ class CamperControlBridge:
         self._service.add_path("/Status/LastError", "Starting")
         for section in STATE_SECTIONS:
             self._service.add_path(f"/State/{section.title()}", "{}")
+        self._service.add_path("/State/Weather", "{}")
+        self._service.add_path("/Status/WeatherLastUpdate", 0)
+        self._service.add_path("/Status/WeatherError", "")
         self._service.add_path(
             "/Command",
             "",
@@ -171,6 +183,10 @@ class CamperControlBridge:
         )
         self._service.add_path("/LastCommandResult", "")
         self._service.register()
+
+        cached_weather = self._weather.cached()
+        if cached_weather:
+            self._apply_weather(cached_weather)
 
     def _accept_command(self, _path: str, raw_value: Any) -> bool:
         try:
@@ -205,6 +221,26 @@ class CamperControlBridge:
             self._service["/Status/LastError"] = str(result.get("error", "Befehl fehlgeschlagen"))[:256]
         return False
 
+    def _apply_weather(self, weather: dict[str, Any]) -> bool:
+        encoded = json.dumps(weather, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if len(encoded.encode("utf-8")) > MAX_WEATHER_BYTES:
+            self._service["/Status/WeatherError"] = "Wetterdaten überschreiten das Transportlimit"
+            return False
+        if encoded != self._last_weather:
+            self._service["/State/Weather"] = encoded
+            self._last_weather = encoded
+        self._service["/Status/WeatherLastUpdate"] = int(time.time())
+        self._service["/Status/WeatherError"] = ""
+        return False
+
+    def _apply_weather_error(self, error: str) -> bool:
+        self._service["/Status/WeatherError"] = error[:256]
+        cached = self._weather.cached()
+        if cached:
+            self._apply_weather(cached)
+            self._service["/Status/WeatherError"] = error[:256]
+        return False
+
     def _state_worker(self) -> None:
         while not self._stop.is_set():
             started = time.monotonic()
@@ -235,9 +271,24 @@ class CamperControlBridge:
             self._glib.idle_add(self._apply_command_result, result)
             self._commands.task_done()
 
+    def _weather_worker(self) -> None:
+        retry_index = 0
+        while not self._stop.is_set():
+            try:
+                weather = self._weather.refresh()
+                self._glib.idle_add(self._apply_weather, weather)
+                retry_index = 0
+                delay = REFRESH_SECONDS
+            except Exception as error:  # provider errors must never stop the D-Bus bridge
+                self._glib.idle_add(self._apply_weather_error, f"DWD-Wetter: {error}")
+                delay = RETRY_SECONDS[min(retry_index, len(RETRY_SECONDS) - 1)]
+                retry_index += 1
+            self._stop.wait(delay)
+
     def start(self) -> None:
         threading.Thread(target=self._state_worker, name="camper-state", daemon=True).start()
         threading.Thread(target=self._command_worker, name="camper-command", daemon=True).start()
+        threading.Thread(target=self._weather_worker, name="camper-weather", daemon=True).start()
 
 
 def main() -> int:

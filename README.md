@@ -50,6 +50,10 @@ im unveränderten V1-Zweig. Mit `--cerbo http://172.24.24.1:1880` und
   `com.victronenergy.campercontrol`-Dienst veröffentlicht kompakte Zustände und
   Befehle über die vorhandene D-Bus-/FlashMQ-N/R/W-Infrastruktur; Details stehen
   in `docs/vrm-remote-transport.md`.
+- Derselbe Cerbo-Dienst lädt und cached die DWD-MOSMIX-Wettervorhersage zentral
+  und veröffentlicht sie ausschließlich lesbar unter `/State/Weather`. GX,
+  Remote Console und Ford SYNC greifen nicht selbst auf den DWD zu. Vertrag und
+  Betrieb stehen in `docs/WEATHER_DWD.md`.
 
 ## Cerbo-CPU-Lüftung
 

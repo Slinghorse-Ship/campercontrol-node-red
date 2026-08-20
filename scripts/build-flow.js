@@ -110,6 +110,34 @@ snapshotFallback.repeat = '10';
 snapshotFallback.once = true;
 snapshotFallback.onceDelay = 5;
 
+// Node-RED may persist context values to disk. Native Timeout objects are
+// circular, non-serialisable handles and must therefore never be stored in
+// context/flow/global. The two burst coalescers use core Trigger nodes instead:
+// the STAR-Power path is a trailing-edge debounce, while all other sensor
+// updates retain the previous leading-edge 150 ms throttle behaviour.
+const configureCoalescingTrigger = (id, name, durationMs, extend) => {
+  const node = get(id);
+  for (const key of ['func', 'timeout', 'noerr', 'initialize', 'finalize', 'libs']) delete node[key];
+  Object.assign(node, {
+    type: 'trigger',
+    name,
+    op1: '',
+    op2: '',
+    op1type: 'nul',
+    op2type: 'str',
+    duration: String(durationMs),
+    extend,
+    overrideDelay: false,
+    units: 'ms',
+    reset: '',
+    bytopic: 'all',
+    topic: 'topic',
+    outputs: 1
+  });
+};
+configureCoalescingTrigger('d36a1adac492ce3e', 'STAR-Power Rückmeldung nach 100 ms bündeln', 100, true);
+configureCoalescingTrigger('cff2c4d32221ccd8', 'Sensor-Bursts auf 150 ms bündeln', 150, false);
+
 // Ruuvi wird nicht gesucht. Der vorhandene Sensor FB31 ist fest und nativ dem
 // Victron-Temperaturdienst /24 als Deckenfühler zugeordnet. Ein Bodenfühler
 // bleibt bis zu seiner ausdrücklichen Service-Zuordnung offline; dadurch kann
@@ -409,8 +437,8 @@ starRouter.wires[13] = [];
 starRouter.wires[16] = ['d1a6f2d556b5e888'];
 const warningController = get('e0809a11d6ca3b34');
 warningController.name = 'Warnlicht CH 8 · State-only';
-warningController.outputs = 1;
-warningController.wires = [['6a22df3c7ebe02fc']];
+warningController.outputs = 2;
+warningController.wires = [['6a22df3c7ebe02fc'], ['199eabbda79b02de']];
 warningController.func = String.raw`
 const WHITE_CHANNEL = 7;
 const WARNING_CHANNEL = 8;
@@ -423,38 +451,31 @@ const physical = (channel, value) => ({
     topic: 'ui',
     payload: { action: 'toggle', channel, value, _warningPhysical: true }
 });
-const stopTimer = () => {
-    const timer = context.get('blinkTimer');
-    if (timer) clearTimeout(timer);
-    context.set('blinkTimer', null);
-};
-const scheduleNextEdge = () => {
-    stopTimer();
-    if (!warning.active || warning.pending) return;
-    const timer = setTimeout(() => {
-        context.set('blinkTimer', null);
-        const current = flow.get('frontWarningBlink') || {};
-        if (current.active !== true || current.pending === true) return;
-        current.phase = current.phase !== true;
-        current.pending = true;
-        current.lastCommandAt = Date.now();
-        flow.set('frontWarningBlink', current);
-        // Genau ein physischer Pfad: STAR-Power CH 8 State.
-        node.send(physical(WARNING_CHANNEL, current.phase ? 1 : 0));
-    }, INTERVAL_MS);
-    context.set('blinkTimer', timer);
-};
+const cancelClock = () => ({ topic: 'front-warning-clock', reset: true });
+const scheduleClock = () => ({ topic: 'front-warning-clock', payload: '' });
 
-if (msg.topic === 'front-warning-reset') {
-    stopTimer();
+if (msg.topic === 'front-warning-reset' || msg.topic === 'init') {
     warning = {
         active: false, phase: false, pending: false,
         intervalMs: INTERVAL_MS, startedAt: 0,
         lastCommandAt: Date.now(), lastAckAt: 0
     };
     flow.set('frontWarningBlink', warning);
-    // Sicherer Startzustand nur für CH 8; CH 11 bleibt unangetastet.
-    return [physical(WARNING_CHANNEL, 0)];
+    // Sicherer Startzustand nur für CH 8; CH 11 bleibt unangetastet. Das
+    // originale init erreicht zusätzlich den STAR-Power-Dashboardzustand.
+    const output = [physical(WARNING_CHANNEL, 0)];
+    if (msg.topic === 'init') output.push(msg);
+    return [output, cancelClock()];
+}
+
+if (msg.topic === 'front-warning-clock') {
+    if (warning.active !== true || warning.pending === true) return null;
+    warning.phase = warning.phase !== true;
+    warning.pending = true;
+    warning.lastCommandAt = Date.now();
+    flow.set('frontWarningBlink', warning);
+    // Genau ein physischer Pfad: STAR-Power CH 8 State.
+    return [physical(WARNING_CHANNEL, warning.phase ? 1 : 0), null];
 }
 
 if (msg.topic === 'state:8') {
@@ -464,19 +485,18 @@ if (msg.topic === 'state:8') {
         warning.pending = false;
         warning.lastAckAt = Date.now();
         flow.set('frontWarningBlink', warning);
-        scheduleNextEdge();
+        return [msg, scheduleClock()];
     }
     // Rückmeldung zusätzlich an die normale STAR-Power-Auswertung geben.
-    return [msg];
+    return [msg, null];
 }
 
-if (msg.topic !== 'ui' || !msg.payload || typeof msg.payload !== 'object') return [msg];
+if (msg.topic !== 'ui' || !msg.payload || typeof msg.payload !== 'object') return [msg, null];
 const action = msg.payload;
 const channel = Number(action.channel);
 
 if (action.action === 'toggle' && channel === WARNING_CHANNEL && action._warningPhysical !== true) {
     const enabled = Number(action.value) === 1;
-    stopTimer();
     warning.active = enabled;
     warning.phase = enabled;
     warning.pending = enabled;
@@ -486,26 +506,48 @@ if (action.action === 'toggle' && channel === WARNING_CHANNEL && action._warning
     const messages = [];
     if (enabled) messages.push(physical(WHITE_CHANNEL, 0));
     messages.push(physical(WARNING_CHANNEL, enabled ? 1 : 0));
-    return [messages];
+    return [messages, cancelClock()];
 }
 
 if (action.action === 'toggle' && channel === WHITE_CHANNEL && Number(action.value) === 1 && action._warningPhysical !== true) {
-    stopTimer();
     warning.active = false;
     warning.phase = false;
     warning.pending = false;
     warning.startedAt = 0;
     warning.lastCommandAt = Date.now();
     flow.set('frontWarningBlink', warning);
-    return [[physical(WARNING_CHANNEL, 0), msg]];
+    return [[physical(WARNING_CHANNEL, 0), msg], cancelClock()];
 }
 
 // Warnlicht ist absichtlich nicht dimmbar. Auch ein veralteter Client darf
 // niemals einen CH-8-Dimming-Befehl oder einen anderen Kanal ansteuern.
 if (action.action === 'dim' && channel === WARNING_CHANNEL) return null;
-return [msg];
+return [msg, null];
 `;
-warningController.finalize = "const timer = context.get('blinkTimer');\nif (timer) clearTimeout(timer);\ncontext.set('blinkTimer', null);";
+warningController.initialize = "flow.set('frontWarningBlink', { active: false, phase: false, pending: false, intervalMs: 500, startedAt: 0, lastCommandAt: Date.now(), lastAckAt: 0 });";
+warningController.finalize = "flow.set('frontWarningBlink', { active: false, phase: false, pending: false, intervalMs: 500, startedAt: 0, lastCommandAt: Date.now(), lastAckAt: 0 });";
+const warningClock = get('199eabbda79b02de');
+for (const key of ['props', 'repeat', 'crontab', 'once', 'onceDelay', 'topic']) delete warningClock[key];
+Object.assign(warningClock, {
+  type: 'trigger',
+  name: 'Warnlicht · nächster Takt nach 500 ms',
+  op1: '',
+  op2: '',
+  op1type: 'nul',
+  op2type: 'str',
+  duration: '500',
+  extend: false,
+  overrideDelay: false,
+  units: 'ms',
+  reset: '',
+  bytopic: 'all',
+  topic: 'topic',
+  outputs: 1,
+  wires: [['e0809a11d6ca3b34']]
+});
+// Der bestehende Dashboard-Init übernimmt zugleich den sicheren AUS-Befehl;
+// die Trigger-Node bleibt dadurch ausschließlich der serielle 500-ms-Takt.
+get('86d942fcb177ccae').onceDelay = 0.2;
 get('9bfddf1c91f0016b').wires = [['6a22df3c7ebe02fc', 'd36a1adac492ce3e']];
 get('7b14fa6e29773eb5').wires = [['6a22df3c7ebe02fc', 'd36a1adac492ce3e']];
 get('4ae22adfa536b4be').wires = [['6a22df3c7ebe02fc', 'd36a1adac492ce3e']];
@@ -996,6 +1038,15 @@ const cleanEmbeddedDefaults = source => source.replace(
   }
 );
 
+// Venus OS exposes its persistent localfilesystem context as the default
+// store. Older flow revisions addressed a non-existent store named "file",
+// which caused warnings and repeated fallback writes. Preserve persistence by
+// using the configured default store without naming an unavailable backend.
+const useDefaultContextStore = source => source.replace(
+  /(\b(?:context|flow|global)\.(?:get|set)\([^\n;]*?),\s*(['"])file\2\s*\)/g,
+  '$1)'
+);
+
 settings.func = cleanEmbeddedDefaults(settings.func)
   .replace(
     "    cfg.ventilation = {\n        enabled: boolean(cfg.ventilation && cfg.ventilation.enabled, false),\n        onTemperature: number(cfg.ventilation && cfg.ventilation.onTemperature, 65, 30, 95),\n        hysteresis: number(cfg.ventilation && cfg.ventilation.hysteresis, 5, 2, 20),\n        // Die Hardwarezuordnung ist fest: Cerbo Relais 1 = Zuluft,\n        // Cerbo Relais 2 = Abluft. Sie ist nicht frei umkonfigurierbar.\n        supplyRelay: 1,\n        exhaustRelay: 2\n    };",
@@ -1317,7 +1368,19 @@ if (!settingsUi.format.includes('class="design-picker"')) {
 }
 
 for (const node of flows) {
-  if (typeof node.func === 'string') node.func = cleanEmbeddedDefaults(node.func);
+  for (const field of ['func', 'initialize', 'finalize']) {
+    if (typeof node[field] === 'string') {
+      node[field] = useDefaultContextStore(cleanEmbeddedDefaults(node[field]));
+    }
+  }
+}
+
+const namedFileStoreUsers = flows.filter(node => ['func', 'initialize', 'finalize'].some(field =>
+  typeof node[field] === 'string'
+  && /\b(?:context|flow|global)\.(?:get|set)\([^\n;]*,\s*(['"])file\1\s*\)/.test(node[field])
+));
+if (namedFileStoreUsers.length) {
+  throw new Error('Unbekannter Context-Store file verbleibt in Nodes: ' + namedFileStoreUsers.map(node => node.id).join(', '));
 }
 
 const forbidden = ['apiToken', 'x-camper-token', 'tokenConfigured', 'allowReadWithoutToken', 'unauthorized', 'stratificationWarning', 'stratification:'];

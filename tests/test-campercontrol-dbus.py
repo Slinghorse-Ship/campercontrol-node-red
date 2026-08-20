@@ -14,6 +14,49 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CamperControlDbusContractTest(unittest.TestCase):
+    def test_weather_is_separate_read_only_changed_only_path(self):
+        class FakeService:
+            def __init__(self, _name, register=False):
+                self.values = {}
+                self.path_options = {}
+                self.assignments = []
+
+            def add_mandatory_paths(self, **_kwargs):
+                return None
+
+            def add_path(self, path, value, **options):
+                self.values[path] = value
+                self.path_options[path] = options
+
+            def register(self):
+                return None
+
+            def __setitem__(self, path, value):
+                self.values[path] = value
+                self.assignments.append((path, value))
+
+            def __getitem__(self, path):
+                return self.values[path]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        bridge = MODULE.CamperControlBridge(object(), FakeService)
+        self.assertFalse(bridge._service.path_options["/State/Weather"].get("writeable", False))
+        self.assertTrue(bridge._service.path_options["/Command"].get("writeable", False))
+        payload = {"schema": 1, "hourly": [], "daily": [], "stale": False}
+        bridge._apply_weather(payload)
+        bridge._apply_weather(payload)
+        writes = [value for path, value in bridge._service.assignments if path == "/State/Weather"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(json.loads(writes[0]), payload)
+
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('threading.Thread(target=self._weather_worker', source)
+
     def test_compact_state_preserves_ui_sections_and_removes_volatile_values(self):
         state = {
             "sequence": 9,

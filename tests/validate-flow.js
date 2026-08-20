@@ -68,11 +68,18 @@ for (const node of flows) {
   }
   if (node.type === 'function') {
     functionsChecked += 1;
-    try {
-      new Function('msg', 'flow', 'context', 'node', 'env', 'RED', node.func || '');
-    } catch (error) {
-      failures.push(`Function-Syntax ${node.id}: ${error.message}`);
+    for (const field of ['func', 'initialize', 'finalize']) {
+      const code = node[field] || '';
+      try {
+        new Function('msg', 'flow', 'context', 'node', 'env', 'RED', code);
+      } catch (error) {
+        failures.push(`Function-Syntax ${node.id}.${field}: ${error.message}`);
+      }
     }
+    const serverCode = `${node.func || ''}\n${node.initialize || ''}\n${node.finalize || ''}`;
+    check(!/\b(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/.test(serverCode), `${node.id} enthält keinen serverseitigen Function-Timer`);
+    check(!/(?:context|flow|global)\.set\s*\(\s*['"`][^'"`]*(?:timer|timeout|interval|handle)[^'"`]*['"`]/i.test(serverCode), `${node.id} persistiert keinen Timer-/Handle-Schlüssel`);
+    check(!/\b(?:context|flow|global)\.(?:get|set)\([^\n;]*,\s*(['"])file\1\s*\)/.test(serverCode), `${node.id} verwendet keinen unbekannten Context-Store file`);
   }
 }
 
@@ -216,11 +223,10 @@ check(JSON.stringify(migratedConfig.ui?.quickAccessIds) === JSON.stringify([
   'light:inside_main', 'light:outside_front_amber', 'light:outside_right', 'switch:high_beam_manual'
 ]), 'Bestehende vier Lichtbelegungen bleiben bei der Migration erhalten');
 
-const designMemory = new Map();
 const designFile = new Map([['camperConfig', migratedConfig]]);
 const designFlow = {
-  get: (key, store) => store === 'file' ? designFile.get(key) : designMemory.get(key),
-  set: (key, value, store) => (store === 'file' ? designFile : designMemory).set(key, value)
+  get: key => designFile.get(key),
+  set: (key, value) => designFile.set(key, value)
 };
 let designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, designFlow, {}, {}, {}, {});
 check(designOutput?.[0]?.payload?.config?.ui?.designVersion === 'v1', 'Settings-Patch schaltet auf Design V1');
@@ -379,6 +385,9 @@ const warningOut = get('959137a3ca444583');
 const rearStateOut = get('4afab948e3bba101');
 const rearDimOut = get('d1a6f2d556b5e888');
 const warning = get('e0809a11d6ca3b34');
+const warningClock = get('199eabbda79b02de');
+const starpowerCoalescer = get('d36a1adac492ce3e');
+const sensorCoalescer = get('cff2c4d32221ccd8');
 const starRouter = get('6a22df3c7ebe02fc');
 check(warningOut.path === '/SwitchableOutput/7/State', 'Warnlicht schaltet ausschließlich CH 8 State');
 check(rearStateOut.path === '/SwitchableOutput/10/State', 'Hecklicht schaltet ausschließlich CH 11 State');
@@ -386,12 +395,21 @@ check(rearDimOut.path === '/SwitchableOutput/10/Dimming', 'Hecklicht dimmt aussc
 check(warningOut.id !== rearStateOut.id && warningOut.path !== rearStateOut.path, 'Warnlicht und Heck besitzen getrennte Ausgänge');
 check(nodesAt('com.victronenergy.switch/0', '/SwitchableOutput/7/Dimming', 'victron-output-switch').length === 0, 'Warnlicht besitzt keinen Dimming-Ausgang');
 check(!byId.has('60540243db20bc53'), 'Alter Warnlicht-Dimming-Ausgang ist entfernt');
-check(warning.outputs === 1, 'Warnblink-Controller hat nur einen Ausgang');
-check(JSON.stringify(warning.wires) === JSON.stringify([['6a22df3c7ebe02fc']]), 'Warnblink-Controller führt nur zum STAR-Power-Router');
+check(warning.outputs === 2, 'Warnblink-Controller trennt Hardware und seriellen Takt');
+check(JSON.stringify(warning.wires) === JSON.stringify([['6a22df3c7ebe02fc'], ['199eabbda79b02de']]), 'Warnblink-Controller führt Hardware zum Router und Takt zum Trigger');
+check(warningClock.type === 'trigger' && warningClock.duration === '500' && warningClock.units === 'ms', 'Warnblink-Takt verwendet eine Core-Trigger-Node mit 500 ms');
+check(warningClock.op1type === 'nul' && warningClock.extend === false, 'Warnblink-Trigger sendet ausschließlich die verzögerte Taktmeldung');
+check(JSON.stringify(warningClock.wires) === JSON.stringify([['e0809a11d6ca3b34']]), 'Warnblink-Trigger führt ausschließlich zum Controller zurück');
 check(warning.func.includes("msg.topic === 'state:8'"), 'Warnblink-Takt wird durch CH-8-State bestätigt');
+check(warning.func.includes("msg.topic === 'front-warning-clock'"), 'Warnblink-Controller verarbeitet nur explizite Trigger-Takte');
 check(!warning.func.includes("msg.topic === 'dim:8'"), 'Warnblink-Takt verwendet keine Dimming-Bestätigung');
 check(!warning.func.includes('WARNING_LEVEL') && !warning.func.includes('dimming('), 'Warnblink-Controller erzeugt keine Dimming-Befehle');
 check(!warning.func.includes('SwitchableOutput/10') && !warning.func.includes('WARNING_CHANNEL = 11'), 'Warnblink-Controller kann CH 11 nicht ansprechen');
+check(starpowerCoalescer.type === 'trigger' && starpowerCoalescer.duration === '100' && starpowerCoalescer.extend === true, 'STAR-Power-Bursts werden per Core-Trigger 100 ms nachlaufend gebündelt');
+check(sensorCoalescer.type === 'trigger' && sensorCoalescer.duration === '150' && sensorCoalescer.extend === false, 'Sensor-Bursts werden per Core-Trigger höchstens alle 150 ms gebündelt');
+for (const coalescer of [starpowerCoalescer, sensorCoalescer, warningClock]) {
+  check(!('func' in coalescer) && !('initialize' in coalescer) && !('finalize' in coalescer), `${coalescer.id} enthält keinen Function-/Context-Code`);
+}
 check(JSON.stringify(starRouter.wires?.[7] || []) === JSON.stringify(['959137a3ca444583']), 'STAR-Power State CH 8 führt exakt zum Warnlicht-Ausgang');
 check((starRouter.wires?.[13] || []).length === 0, 'STAR-Power Dimming CH 8 ist unverdrahtet');
 check(JSON.stringify(starRouter.wires?.[10] || []) === JSON.stringify(['4afab948e3bba101']), 'STAR-Power State CH 11 führt exakt zum Hecklicht-Ausgang');
@@ -400,7 +418,38 @@ for (const id of ['7b14fa6e29773eb5', '4ae22adfa536b4be']) {
   check(!targetsOf(id).includes('e0809a11d6ca3b34'), `${id} umgeht den Warnblink-Controller`);
   check(targetsOf(id).includes('6a22df3c7ebe02fc') && targetsOf(id).includes('d36a1adac492ce3e'), `${id} geht direkt zu Zustand und Aggregator`);
 }
-check(get('199eabbda79b02de').topic === 'front-warning-reset' && get('199eabbda79b02de').once === true, 'Deploy initialisiert ausschließlich Warnlicht sicher AUS');
+check(get('86d942fcb177ccae').topic === 'init' && get('86d942fcb177ccae').once === true && get('86d942fcb177ccae').onceDelay === 0.2, 'STAR-Power-Init setzt Warnlicht zeitnah und sicher AUS');
+
+// Funktionale Regression: ACK-gesteuerter Blinkzyklus ohne Timer-Handle im
+// persistenten Context. Der Core-Trigger selbst wird strukturell geprüft;
+// hier simulieren wir ausschließlich die serialisierbare Zustandsmaschine.
+const warningValues = new Map();
+const warningFlow = {
+  get: key => warningValues.get(key),
+  set: (key, value) => warningValues.set(key, value)
+};
+const runWarning = msg => new Function('msg', 'flow', 'context', 'node', 'env', 'RED', warning.func)(
+  msg, warningFlow, { get() {}, set() {} }, { send() {}, warn() {}, error() {}, status() {} }, {}, {}
+);
+new Function('msg', 'flow', 'context', 'node', 'env', 'RED', warning.initialize || '')(
+  {}, warningFlow, { get() {}, set() {} }, { send() {} }, {}, {}
+);
+const warningInit = runWarning({ topic: 'init', payload: '' });
+check(warningInit?.[0]?.[0]?.payload?.channel === 8 && warningInit?.[0]?.[0]?.payload?.value === 0, 'Initialisierung schreibt ausschließlich Warnlicht CH 8 AUS');
+check(warningInit?.[0]?.[1]?.topic === 'init' && warningInit?.[1]?.reset === true, 'Initialisierung erhält Dashboard-Init und verwirft alten Takt');
+const warningStart = runWarning({ topic: 'ui', payload: { action: 'toggle', channel: 8, value: 1 } });
+check(warningStart?.[0]?.length === 2 && warningStart[0][0].payload.channel === 7 && warningStart[0][0].payload.value === 0, 'Warnlichtstart schaltet Weißlicht zuerst AUS');
+check(warningStart?.[0]?.[1]?.payload?.channel === 8 && warningStart[0][1].payload.value === 1 && warningStart?.[1]?.reset === true, 'Warnlichtstart schaltet CH 8 EIN und verwirft alten Takt');
+const warningAckOn = runWarning({ topic: 'state:8', payload: 1 });
+check(warningAckOn?.[1]?.topic === 'front-warning-clock' && warningAckOn?.[1]?.reset !== true, 'CH-8-ACK plant exakt einen Core-Trigger-Takt');
+const warningEdge = runWarning({ topic: 'front-warning-clock', payload: '' });
+check(warningEdge?.[0]?.payload?.channel === 8 && warningEdge?.[0]?.payload?.value === 0 && warningEdge?.[1] === null, 'Trigger-Takt erzeugt genau die nächste CH-8-Flanke');
+const warningAckOff = runWarning({ topic: 'state:8', payload: 0 });
+check(warningAckOff?.[1]?.topic === 'front-warning-clock', 'Nächster Takt wird erst nach passendem CH-8-ACK geplant');
+const warningStop = runWarning({ topic: 'ui', payload: { action: 'toggle', channel: 8, value: 0 } });
+check(warningStop?.[0]?.[0]?.payload?.channel === 8 && warningStop?.[0]?.[0]?.payload?.value === 0 && warningStop?.[1]?.reset === true, 'Warnlichtstopp setzt CH 8 AUS und löscht den Trigger-Takt');
+const persistedWarning = warningValues.get('frontWarningBlink');
+check(persistedWarning?.active === false && JSON.parse(JSON.stringify(persistedWarning)).pending === false, 'Warnblinkzustand bleibt vollständig JSON-serialisierbar');
 
 // Externes WLAN: native Plattformpfade für Status/Schalten/Scan und sicherer
 // loopback-only ConnMan-Helfer für neue Zugangsdaten.
