@@ -1,0 +1,59 @@
+{
+  "station_name": "Nordsee Testpegel",
+  "bshnr": "900P",
+  "latitude": 53.5,
+  "longitude": 8.1,
+  "gauge_group": 1,
+  "seo_id": "nordsee_testpegel",
+  "pegelonline_uuid": "00000000-0000-0000-0000-000000000000",
+  "has_wvd": true,
+  "years": [
+    {
+      "2026": {
+        "level_tidalvalues": "PNP",
+        "has_height": true,
+        "has_curve": false,
+        "hwnw_prediction": {
+          "level": "PNP",
+          "data": [
+            {
+              "timestamp": "2026-08-20 05:05:00+01:00",
+              "height": 470,
+              "type": "NW",
+              "moon": null,
+              "phase": "MT"
+            },
+            {
+              "timestamp": "2026-08-20 13:30:00+01:00",
+              "height": 731,
+              "type": "HW",
+              "moon": null,
+              "phase": "MT"
+            },
+            {
+              "timestamp": "2026-08-20 19:45:00+01:00",
+              "height": 468,
+              "type": "NW",
+              "moon": null,
+              "phase": "MT"
+            },
+            {
+              "timestamp": "2026-08-21 01:55:00+01:00",
+              "height": 729,
+              "type": "HW",
+              "moon": null,
+              "phase": "MT"
+            },
+            {
+              "timestamp": "2026-08-21 08:10:00+01:00",
+              "height": null,
+              "type": "NW",
+              "moon": null,
+              "phase": "MT"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Cerbo-owned DWD MOSMIX weather acquisition for CamperControl.
+"""Cerbo-owned DWD MOSMIX weather and BSH tide acquisition for CamperControl.
 
 The module deliberately has no QML or browser dependency.  It selects a DWD
 MOSMIX_L station from the active GX GPS service, downloads the single-station
 forecast, normalizes it to a compact transport contract and keeps an atomic
-cache under ``/data``.  Consumers only read the resulting D-Bus/MQTT value.
+cache under ``/data``.  When the GX is close to a North Sea tide gauge, the
+provider also adds the next BSH high and low water predictions. Consumers only
+read the resulting D-Bus/MQTT value.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SOURCE_NAME = "DWD MOSMIX_L"
 SOURCE_ATTRIBUTION = "Quelle: Deutscher Wetterdienst"
+TIDE_SOURCE_NAME = "BSH"
+TIDE_ATTRIBUTION = "© Bundesamt für Seeschifffahrt und Hydrographie (BSH)"
 SCHEMA_VERSION = 1
 STATION_CATALOG_URLS = (
     "https://www.dwd.de/DE/leistungen/met_verfahren_mosmix/"
@@ -41,15 +45,33 @@ FORECAST_URL = (
     "https://opendata.dwd.de/weather/local_forecasts/mos/MOSMIX_L/"
     "single_stations/{station}/kml/MOSMIX_L_LATEST_{station}.kmz"
 )
+TIDE_CATALOG_URL = "https://gezeiten.bsh.de/data/tides_overview.json"
+TIDE_STATION_URL = "https://gezeiten.bsh.de/data/DE_{station}_tides.json"
 DEFAULT_CACHE_PATH = Path("/data/campercontrol/cache/weather-v1.json")
 DEFAULT_CATALOG_PATH = Path("/data/campercontrol/cache/mosmix-stations-v1.cfg")
 DEFAULT_STATION_CONFIG_PATH = Path("/data/campercontrol/weather-station.conf")
+DEFAULT_TIDE_CACHE_PATH = Path("/data/campercontrol/cache/bsh-tides-v1.json")
+DEFAULT_TIDE_CATALOG_PATH = Path("/data/campercontrol/cache/bsh-tides-overview-v1.json")
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
 MAX_KMZ_BYTES = 1024 * 1024
 MAX_KML_BYTES = 4 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 16 * 1024
+MAX_TIDE_CATALOG_BYTES = 128 * 1024
+MAX_TIDE_STATION_BYTES = 2 * 1024 * 1024
+MAX_TIDE_CACHE_BYTES = 16 * 1024
 STALE_AFTER_SECONDS = 12 * 60 * 60
 CATALOG_REFRESH_SECONDS = 30 * 24 * 60 * 60
+TIDE_CATALOG_REFRESH_SECONDS = 30 * 24 * 60 * 60
+TIDE_REFRESH_SECONDS = 24 * 60 * 60
+TIDE_STALE_AFTER_SECONDS = 48 * 60 * 60
+TIDE_FAIL_CLOSED_SECONDS = 7 * 24 * 60 * 60
+TIDE_RETRY_SECONDS = 6 * 60 * 60
+TIDE_EVENT_HORIZON_SECONDS = 9 * 24 * 60 * 60
+# A tide prediction is useful near the coast and tidal rivers, but a nearest
+# station must not make tides appear across inland Germany. Sixty kilometres
+# covers common coastal campsites while failing closed well before that occurs.
+TIDE_MAX_DISTANCE_KM = 60.0
+TIDE_CACHE_EVENT_LIMIT = 32
 # MOSMIX_L has four regular model runs per day. A six-hour success interval is
 # sufficient to pick up each run without redundant downloads on the Cerbo.
 REFRESH_SECONDS = 6 * 60 * 60
@@ -63,6 +85,15 @@ class Station:
     latitude: float
     longitude: float
     elevation: float | None = None
+
+
+@dataclass(frozen=True)
+class TideStation:
+    station_id: str
+    name: str
+    latitude: float
+    longitude: float
+    gauge_group: int
 
 
 def utc_now() -> dt.datetime:
@@ -144,6 +175,192 @@ def nearest_station(stations: Iterable[Station], latitude: float, longitude: flo
     if not candidates:
         raise ValueError("no DWD stations available")
     return min(candidates, key=lambda item: item[1])
+
+
+def _json_object(payload: bytes, maximum_bytes: int, source: str) -> dict[str, Any]:
+    if len(payload) > maximum_bytes:
+        raise ValueError(f"{source} JSON exceeds size limit")
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid {source} JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{source} JSON root must be an object")
+    return value
+
+
+def parse_tide_catalog(payload: bytes) -> tuple[list[TideStation], str]:
+    """Parse the public catalog consumed by the official BSH tide website.
+
+    ``gauge_group`` 3 contains Baltic Sea gauges. Groups 1 and 2 are the
+    North Sea/tidal-river stations for which the site provides HW/NW events.
+    Filtering happens here so an Ostsee gauge can never be selected merely
+    because it is geographically close.
+    """
+
+    root = _json_object(payload, MAX_TIDE_CATALOG_BYTES, "BSH tide catalog")
+    copyright_note = str(root.get("copyright_note") or "").strip()
+    if "Bundesamt für Seeschifffahrt und Hydrographie" not in copyright_note:
+        raise ValueError("BSH tide catalog attribution is missing")
+    stations: list[TideStation] = []
+    gauges = root.get("gauges")
+    if not isinstance(gauges, list):
+        raise ValueError("BSH tide catalog has no gauges")
+    for item in gauges:
+        if not isinstance(item, dict):
+            continue
+        station_id = str(item.get("bshnr") or "").strip()
+        name = " ".join(str(item.get("station_name") or "").split())
+        try:
+            latitude = float(item.get("latitude"))
+            longitude = float(item.get("longitude"))
+            gauge_group = int(item.get("gauge_group"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            gauge_group not in (1, 2)
+            or not re.fullmatch(r"[A-Za-z0-9]{2,5}", station_id)
+            or not name
+            or not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not (-90 <= latitude <= 90 and -180 <= longitude <= 180)
+        ):
+            continue
+        stations.append(TideStation(station_id, name, latitude, longitude, gauge_group))
+    if not stations:
+        raise ValueError("BSH tide catalog contains no North Sea gauges")
+    return stations, copyright_note
+
+
+def nearest_tide_station(
+    stations: Iterable[TideStation], latitude: float, longitude: float
+) -> tuple[TideStation, float]:
+    candidates = [
+        (station, haversine_km(latitude, longitude, station.latitude, station.longitude))
+        for station in stations
+    ]
+    if not candidates:
+        raise ValueError("no BSH tide stations available")
+    return min(candidates, key=lambda item: item[1])
+
+
+def tide_station_url(station_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9]{2,5}", station_id):
+        raise ValueError("invalid BSH station id")
+    return TIDE_STATION_URL.format(station=station_id.rjust(5, "_"))
+
+
+def parse_bsh_time(value: Any) -> dt.datetime | None:
+    """Parse BSH timestamps without inventing a timezone.
+
+    The official JSON uses year-round ``+01:00`` (MEZ), including summer.
+    Keeping that explicit offset and converting to UTC means a Berlin client
+    will correctly display the legal summer time one hour later.
+    """
+
+    text = str(value or "").strip()
+    if not text or not re.search(r"(?:Z|[+-]\d{2}:\d{2})$", text):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def parse_utc_z(value: Any) -> dt.datetime | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", text):
+        return None
+    return parse_time(text)
+
+
+def parse_tide_station(
+    payload: bytes,
+    expected_station_id: str,
+    now: dt.datetime,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Normalize at most a small future window from the annual BSH file."""
+
+    root = _json_object(payload, MAX_TIDE_STATION_BYTES, "BSH station tide")
+    station_id = str(root.get("bshnr") or "").strip()
+    if station_id != expected_station_id:
+        raise ValueError("BSH station response does not match requested gauge")
+    station_name = " ".join(str(root.get("station_name") or "").split())
+    years = root.get("years")
+    if not station_name or not isinstance(years, list):
+        raise ValueError("BSH station tide response is incomplete")
+
+    current = now.astimezone(dt.timezone.utc)
+    candidates: list[tuple[dt.datetime, dict[str, Any]]] = []
+    reference_levels: set[str] = set()
+    for year_item in years:
+        if not isinstance(year_item, dict):
+            continue
+        for year, details in year_item.items():
+            if not re.fullmatch(r"\d{4}", str(year)) or not isinstance(details, dict):
+                continue
+            prediction = details.get("hwnw_prediction")
+            if not isinstance(prediction, dict):
+                continue
+            reference = str(prediction.get("level") or details.get("level_tidalvalues") or "").strip().upper()
+            if reference:
+                reference_levels.add(reference)
+            data = prediction.get("data")
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                event_type = str(item.get("type") or "").strip().upper()
+                timestamp = parse_bsh_time(item.get("timestamp"))
+                if (
+                    event_type not in ("HW", "NW")
+                    or timestamp is None
+                    or timestamp < current
+                    or timestamp > current + dt.timedelta(seconds=TIDE_EVENT_HORIZON_SECONDS)
+                ):
+                    continue
+                height_m: float | None = None
+                height = item.get("height")
+                if height is not None:
+                    try:
+                        numeric_height = float(height)
+                    except (TypeError, ValueError):
+                        numeric_height = math.nan
+                    if math.isfinite(numeric_height) and abs(numeric_height) <= 20000:
+                        # BSH publishes integer centimetres above the declared
+                        # reference level; the transport uses metres.
+                        height_m = round(numeric_height / 100.0, 2)
+                candidates.append(
+                    (
+                        timestamp,
+                        {
+                            "t": iso_utc(timestamp),
+                            "type": event_type,
+                            "heightM": height_m,
+                        },
+                    )
+                )
+
+    if len(reference_levels) != 1 or reference_levels != {"PNP"}:
+        raise ValueError("BSH tide reference level is not unambiguously PNP")
+    candidates.sort(key=lambda item: item[0])
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for _timestamp, event in candidates:
+        key = (str(event["t"]), str(event["type"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append(event)
+        if len(events) >= TIDE_CACHE_EVENT_LIMIT:
+            break
+    if not any(item["type"] == "HW" for item in events) or not any(item["type"] == "NW" for item in events):
+        raise ValueError("BSH station tide response has no future HW/NW pair")
+    return station_name, "PNP", events
 
 
 def _local_name(tag: str) -> str:
@@ -442,9 +659,99 @@ def load_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _read_limited(path: Path, maximum_bytes: int) -> bytes:
+    with path.open("rb") as handle:
+        payload = handle.read(maximum_bytes + 1)
+    if len(payload) > maximum_bytes:
+        raise ValueError("cached file exceeds size limit")
+    return payload
+
+
+def load_json_limited(path: Path, maximum_bytes: int) -> dict[str, Any] | None:
+    try:
+        payload = _read_limited(path, maximum_bytes)
+        value = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def save_json(path: Path, value: dict[str, Any]) -> None:
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     _atomic_write(path, payload)
+
+
+def _encoded_json(value: dict[str, Any]) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _valid_tide_cache(value: dict[str, Any], now: dt.datetime) -> dict[str, Any] | None:
+    if value.get("schema") != 1 or value.get("referenceLevel") != "PNP":
+        return None
+    updated = parse_utc_z(value.get("updatedUtc"))
+    current = now.astimezone(dt.timezone.utc)
+    if updated is None or updated > current + dt.timedelta(minutes=5):
+        return None
+    age_seconds = (current - updated).total_seconds()
+    if age_seconds >= TIDE_FAIL_CLOSED_SECONDS:
+        return None
+    station = value.get("station")
+    if not isinstance(station, dict):
+        return None
+    station_id = str(station.get("id") or "")
+    station_name = " ".join(str(station.get("name") or "").split())
+    try:
+        distance_km = float(station.get("distanceKm"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        not re.fullmatch(r"[A-Za-z0-9]{2,5}", station_id)
+        or not station_name
+        or not math.isfinite(distance_km)
+        or not (0 <= distance_km <= TIDE_MAX_DISTANCE_KM)
+    ):
+        return None
+
+    normalized_events: list[dict[str, Any]] = []
+    events = value.get("events")
+    if not isinstance(events, list) or len(events) > TIDE_CACHE_EVENT_LIMIT:
+        return None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").upper()
+        timestamp = parse_utc_z(event.get("t"))
+        if event_type not in ("HW", "NW") or timestamp is None or timestamp < current:
+            continue
+        height_m = event.get("heightM")
+        if height_m is not None:
+            try:
+                height_m = round(float(height_m), 2)
+            except (TypeError, ValueError):
+                height_m = None
+            if height_m is not None and (not math.isfinite(height_m) or abs(height_m) > 200):
+                height_m = None
+        normalized_events.append({"t": iso_utc(timestamp), "type": event_type, "heightM": height_m})
+    normalized_events.sort(key=lambda item: str(item["t"]))
+    next_high = next((item for item in normalized_events if item["type"] == "HW"), None)
+    next_low = next((item for item in normalized_events if item["type"] == "NW"), None)
+    if next_high is None or next_low is None:
+        return None
+
+    return {
+        "source": TIDE_SOURCE_NAME,
+        "attribution": TIDE_ATTRIBUTION,
+        "station": {
+            "id": station_id,
+            "name": station_name,
+            "distanceKm": round(distance_km, 1),
+        },
+        "updatedUtc": iso_utc(updated),
+        "stale": age_seconds >= TIDE_STALE_AFTER_SECONDS,
+        "referenceLevel": "PNP",
+        "nextHigh": {"t": next_high["t"], "heightM": next_high["heightM"]},
+        "nextLow": {"t": next_low["t"], "heightM": next_low["heightM"]},
+    }
 
 
 def _decode_catalog(payload: bytes) -> str:
@@ -548,6 +855,8 @@ class WeatherProvider:
         cache_path: Path = DEFAULT_CACHE_PATH,
         catalog_path: Path = DEFAULT_CATALOG_PATH,
         station_config_path: Path = DEFAULT_STATION_CONFIG_PATH,
+        tide_cache_path: Path = DEFAULT_TIDE_CACHE_PATH,
+        tide_catalog_path: Path = DEFAULT_TIDE_CATALOG_PATH,
         download: Callable[[str, int], bytes] = _download,
         position_reader: Callable[[], tuple[float, float] | None] = read_gx_position,
         timezone_reader: Callable[[], str] = read_gx_timezone,
@@ -556,14 +865,31 @@ class WeatherProvider:
         self.cache_path = cache_path
         self.catalog_path = catalog_path
         self.station_config_path = station_config_path
+        self.tide_cache_path = tide_cache_path
+        self.tide_catalog_path = tide_catalog_path
         self.download = download
         self.position_reader = position_reader
         self.timezone_reader = timezone_reader
         self.now = now
+        self._tide_next_attempt: dt.datetime | None = None
 
     def cached(self) -> dict[str, Any] | None:
         value = load_json(self.cache_path)
-        return mark_stale(value, self.now()) if value else None
+        if not value:
+            return None
+        current = self.now()
+        snapshot = mark_stale(value, current)
+        tides = _valid_tide_cache(
+            load_json_limited(self.tide_cache_path, MAX_TIDE_CACHE_BYTES) or {},
+            current,
+        )
+        if tides is None:
+            snapshot.pop("tides", None)
+        else:
+            snapshot["tides"] = tides
+        if len(_encoded_json(snapshot)) > MAX_SNAPSHOT_BYTES:
+            snapshot.pop("tides", None)
+        return snapshot
 
     def _catalog(self) -> list[Station]:
         cached_stations: list[Station] | None = None
@@ -590,6 +916,98 @@ class WeatherProvider:
             return cached_stations
         raise RuntimeError(f"DWD station catalog unavailable: {last_error}")
 
+    def _tide_catalog(self) -> list[TideStation]:
+        cached_stations: list[TideStation] | None = None
+        cache_is_fresh = False
+        try:
+            cached_payload = _read_limited(self.tide_catalog_path, MAX_TIDE_CATALOG_BYTES)
+            cached_stations, _copyright = parse_tide_catalog(cached_payload)
+            cache_is_fresh = (
+                self.now().timestamp() - self.tide_catalog_path.stat().st_mtime
+                < TIDE_CATALOG_REFRESH_SECONDS
+            )
+        except (OSError, ValueError, UnicodeError):
+            pass
+        if cached_stations is not None and cache_is_fresh:
+            return cached_stations
+        try:
+            payload = self.download(TIDE_CATALOG_URL, MAX_TIDE_CATALOG_BYTES)
+            stations, _copyright = parse_tide_catalog(payload)
+            _atomic_write(self.tide_catalog_path, payload)
+            return stations
+        except (OSError, ValueError, UnicodeError, urllib.error.URLError):
+            if cached_stations is not None:
+                return cached_stations
+            raise
+
+    def _tides_for_position(self, position: tuple[float, float] | None) -> dict[str, Any] | None:
+        current = self.now().astimezone(dt.timezone.utc)
+        cached_value = load_json_limited(self.tide_cache_path, MAX_TIDE_CACHE_BYTES) or {}
+        if position is None:
+            # Tide selection is location-sensitive. A cached weather station or
+            # manual DWD override is not evidence that the vehicle is still
+            # close to the cached BSH gauge.
+            return None
+
+        try:
+            stations = self._tide_catalog()
+            station, distance_km = nearest_tide_station(stations, *position)
+        except (OSError, ValueError, UnicodeError, urllib.error.URLError):
+            self._tide_next_attempt = current + dt.timedelta(seconds=TIDE_RETRY_SECONDS)
+            return None
+        if distance_km > TIDE_MAX_DISTANCE_KM:
+            return None
+
+        cached_station = cached_value.get("station") if isinstance(cached_value.get("station"), dict) else {}
+        cached_station_id = str((cached_station or {}).get("id") or "")
+        cached_updated = parse_time(cached_value.get("updatedUtc"))
+        cached_matches = cached_station_id == station.station_id
+        if cached_matches:
+            # Distance is derived from the current fix. It is safe to update in
+            # memory, while exact GPS coordinates are never persisted or logged.
+            cached_value = json.loads(json.dumps(cached_value))
+            cached_value["station"]["distanceKm"] = round(distance_km, 1)
+            cached_tides = _valid_tide_cache(cached_value, current)
+        else:
+            cached_tides = None
+
+        if (
+            cached_tides is not None
+            and cached_updated is not None
+            and (current - cached_updated).total_seconds() < TIDE_REFRESH_SECONDS
+        ):
+            return cached_tides
+        if self._tide_next_attempt is not None and current < self._tide_next_attempt:
+            return cached_tides
+
+        try:
+            payload = self.download(tide_station_url(station.station_id), MAX_TIDE_STATION_BYTES)
+            station_name, reference_level, events = parse_tide_station(
+                payload,
+                station.station_id,
+                current,
+            )
+            normalized_cache = {
+                "schema": 1,
+                "station": {
+                    "id": station.station_id,
+                    "name": station_name or station.name,
+                    "distanceKm": round(distance_km, 1),
+                },
+                "updatedUtc": iso_utc(current),
+                "referenceLevel": reference_level,
+                "events": events,
+            }
+            encoded = _encoded_json(normalized_cache)
+            if len(encoded) > MAX_TIDE_CACHE_BYTES:
+                raise ValueError("normalized BSH tide cache exceeds size limit")
+            _atomic_write(self.tide_cache_path, encoded)
+            self._tide_next_attempt = None
+            return _valid_tide_cache(normalized_cache, current)
+        except (OSError, ValueError, UnicodeError, urllib.error.URLError):
+            self._tide_next_attempt = current + dt.timedelta(seconds=TIDE_RETRY_SECONDS)
+            return cached_tides
+
     def _manual_station_id(self) -> str:
         configured = os.environ.get("CAMPER_WEATHER_STATION", "").strip()
         if not configured:
@@ -599,14 +1017,17 @@ class WeatherProvider:
                 configured = ""
         return configured if re.fullmatch(r"[A-Za-z0-9]{5}", configured) else ""
 
-    def _select_station(self, stations: list[Station]) -> tuple[Station, float | None]:
+    def _select_station(
+        self,
+        stations: list[Station],
+        position: tuple[float, float] | None = None,
+    ) -> tuple[Station, float | None]:
         manual = self._manual_station_id()
         if manual:
             for station in stations:
                 if station.station_id == manual:
                     return station, None
             raise ValueError(f"configured DWD station {manual} is unknown")
-        position = self.position_reader()
         if position is not None:
             return nearest_station(stations, *position)
         cached = load_json(self.cache_path) or {}
@@ -618,7 +1039,8 @@ class WeatherProvider:
 
     def refresh(self) -> dict[str, Any]:
         stations = self._catalog()
-        station, distance = self._select_station(stations)
+        position = self.position_reader()
+        station, distance = self._select_station(stations, position)
         kmz = self.download(FORECAST_URL.format(station=station.station_id), MAX_KMZ_BYTES)
         model_run, station_name, series, times = parse_mosmix_kmz(kmz)
         snapshot = build_snapshot(
@@ -631,5 +1053,10 @@ class WeatherProvider:
             times=times,
             now=self.now(),
         )
+        tides = self._tides_for_position(position)
+        if tides is not None:
+            snapshot["tides"] = tides
+        if len(_encoded_json(snapshot)) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("normalized weather snapshot exceeds size limit")
         save_json(self.cache_path, snapshot)
         return snapshot

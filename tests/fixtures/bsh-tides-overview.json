@@ -1,0 +1,30 @@
+{
+  "copyright_note": "©Bundesamt für Seeschifffahrt und Hydrographie (BSH). Das BSH übernimmt für die angegebenen Informationen keine Gewähr.",
+  "publications": {},
+  "gauges": [
+    {
+      "station_name": "Nordsee Testpegel",
+      "bshnr": "900P",
+      "latitude": 53.5,
+      "longitude": 8.1,
+      "gauge_group": 1,
+      "seo_id": "nordsee_testpegel"
+    },
+    {
+      "station_name": "Interpolierter Nordsee Testpegel",
+      "bshnr": "901P",
+      "latitude": 54.0,
+      "longitude": 8.6,
+      "gauge_group": 2,
+      "seo_id": "nordsee_testpegel_interpoliert"
+    },
+    {
+      "station_name": "Ostsee Testpegel",
+      "bshnr": "902P",
+      "latitude": 53.51,
+      "longitude": 8.11,
+      "gauge_group": 3,
+      "seo_id": "ostsee_testpegel"
+    }
+  ]
+}

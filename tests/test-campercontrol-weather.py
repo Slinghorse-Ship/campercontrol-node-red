@@ -14,11 +14,15 @@ from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "cerbo-service" / "campercontrol_weather.py"
+FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures"
 SPEC = importlib.util.spec_from_file_location("campercontrol_weather_test", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+BSH_OVERVIEW = (FIXTURE_PATH / "bsh-tides-overview.json").read_bytes()
+BSH_STATION = (FIXTURE_PATH / "bsh-tides-station.json").read_bytes()
 
 
 CATALOG = """ID    ICAO NAME                 LAT    LON     ELEV
@@ -99,6 +103,56 @@ class CamperControlWeatherTest(unittest.TestCase):
         self.assertEqual(nearest.station_id, "10641")
         self.assertLess(distance, 3)
 
+    def test_bsh_catalog_filters_ostsee_and_station_url_matches_official_contract(self):
+        stations, copyright_note = MODULE.parse_tide_catalog(BSH_OVERVIEW)
+        self.assertEqual([item.station_id for item in stations], ["900P", "901P"])
+        self.assertNotIn("902P", [item.station_id for item in stations])
+        self.assertIn("Bundesamt für Seeschifffahrt und Hydrographie", copyright_note)
+        nearest, distance = MODULE.nearest_tide_station(stations, 53.5, 8.1)
+        self.assertEqual(nearest.station_id, "900P")
+        self.assertLess(distance, 0.1)
+        self.assertEqual(
+            MODULE.tide_station_url("900P"),
+            "https://gezeiten.bsh.de/data/DE__900P_tides.json",
+        )
+
+    def test_bsh_mez_timestamp_is_normalized_to_utc_without_dst_guessing(self):
+        now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
+        name, reference, events = MODULE.parse_tide_station(BSH_STATION, "900P", now)
+        self.assertEqual(name, "Nordsee Testpegel")
+        self.assertEqual(reference, "PNP")
+        self.assertEqual(events[0], {"t": "2026-08-20T12:30:00Z", "type": "HW", "heightM": 7.31})
+        self.assertEqual(events[1], {"t": "2026-08-20T18:45:00Z", "type": "NW", "heightM": 4.68})
+        berlin = MODULE.parse_time(events[0]["t"]).astimezone(MODULE.ZoneInfo("Europe/Berlin"))
+        # Raw BSH is 13:30 +01:00 (year-round MEZ); legal August time is
+        # therefore 14:30 CEST after the lossless UTC transport conversion.
+        self.assertEqual((berlin.hour, berlin.minute, str(berlin.utcoffset())), (14, 30, "2:00:00"))
+        self.assertIsNone(MODULE.parse_bsh_time("2026-08-20 13:30:00"))
+
+    def test_bsh_station_parser_rejects_wrong_station_and_non_pnp_reference(self):
+        now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(BSH_STATION, "999P", now)
+        value = json.loads(BSH_STATION)
+        value["years"][0]["2026"]["hwnw_prediction"]["level"] = "SKN"
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(json.dumps(value).encode(), "900P", now)
+
+    def test_bsh_json_and_cache_size_limits_fail_closed(self):
+        now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_catalog(b"x" * (MODULE.MAX_TIDE_CATALOG_BYTES + 1))
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(
+                b"x" * (MODULE.MAX_TIDE_STATION_BYTES + 1),
+                "900P",
+                now,
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            cache = pathlib.Path(directory) / "oversized.json"
+            cache.write_bytes(b" " * (MODULE.MAX_TIDE_CACHE_BYTES + 1))
+            self.assertIsNone(MODULE.load_json_limited(cache, MODULE.MAX_TIDE_CACHE_BYTES))
+
     def test_mosmix_parser_and_snapshot_use_exact_transport_contract(self):
         model_run, name, series, times = MODULE.parse_mosmix_kmz(sample_kmz())
         self.assertEqual(model_run, "2026-08-18T21:00:00Z")
@@ -148,14 +202,22 @@ class CamperControlWeatherTest(unittest.TestCase):
 
             def download(url, _maximum):
                 downloads.append(url)
-                return CATALOG.encode("latin-1") if "stationskatalog" in url or "mosmix_stations.cfg" in url else sample_kmz()
+                if "stationskatalog" in url or "mosmix_stations.cfg" in url:
+                    return CATALOG.encode("latin-1")
+                if url == MODULE.TIDE_CATALOG_URL:
+                    return BSH_OVERVIEW
+                if url.endswith("_tides.json"):
+                    return BSH_STATION
+                return sample_kmz()
 
             provider = MODULE.WeatherProvider(
                 cache_path=base / "weather.json",
                 catalog_path=base / "stations.cfg",
                 station_config_path=base / "manual.conf",
+                tide_cache_path=base / "tides.json",
+                tide_catalog_path=base / "tide-stations.json",
                 download=download,
-                position_reader=lambda: (50.11, 8.79),
+                position_reader=lambda: (53.5, 8.1),
                 timezone_reader=lambda: "Europe/Berlin",
                 now=lambda: now,
             )
@@ -164,15 +226,19 @@ class CamperControlWeatherTest(unittest.TestCase):
             raw = (base / "weather.json").read_text(encoding="utf-8")
             self.assertNotIn("latitude", raw)
             self.assertNotIn("longitude", raw)
-            self.assertNotIn("distanceKm", raw)
+            self.assertIn("distanceKm", raw)
             self.assertLessEqual(len(raw.encode("utf-8")), MODULE.MAX_SNAPSHOT_BYTES)
-            self.assertEqual(len(downloads), 2)
+            self.assertEqual(len(downloads), 4)
             self.assertFalse(list(base.glob("*.kmz")))
             self.assertFalse(list(base.glob("*.kml")))
             self.assertEqual(
                 sorted(item.name for item in base.iterdir()),
-                ["stations.cfg", "weather.json"],
+                ["stations.cfg", "tide-stations.json", "tides.json", "weather.json"],
             )
+            self.assertNotIn("latitude", (base / "tides.json").read_text(encoding="utf-8"))
+            self.assertNotIn("longitude", (base / "tides.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["tides"]["station"]["id"], "900P")
+            self.assertEqual(snapshot["tides"]["nextHigh"]["heightM"], 7.31)
             self.assertEqual(provider.cached()["stale"], False)
 
     def test_stale_station_catalog_is_refreshed_but_survives_network_failure(self):
@@ -221,6 +287,85 @@ class CamperControlWeatherTest(unittest.TestCase):
             self.assertEqual(cached["daily"], [])
             self.assertIsNone(cached["sun"]["riseUtc"])
 
+    def test_tides_are_hidden_far_inland_without_downloading_station_file(self):
+        now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            tide_catalog = base / "tide-stations.json"
+            tide_catalog.write_bytes(BSH_OVERVIEW)
+            calls = []
+            provider = MODULE.WeatherProvider(
+                cache_path=base / "weather.json",
+                catalog_path=base / "stations.cfg",
+                station_config_path=base / "manual.conf",
+                tide_cache_path=base / "tides.json",
+                tide_catalog_path=tide_catalog,
+                download=lambda url, _maximum: calls.append(url) or BSH_STATION,
+                now=lambda: now,
+            )
+            self.assertIsNone(provider._tides_for_position((48.14, 11.58)))
+            self.assertEqual(calls, [])
+
+    def test_tide_cache_marks_stale_then_fails_closed_and_never_contains_gps(self):
+        fetched = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        value = {
+            "schema": 1,
+            "station": {"id": "900P", "name": "Nordsee Testpegel", "distanceKm": 4.2},
+            "updatedUtc": MODULE.iso_utc(fetched),
+            "referenceLevel": "PNP",
+            "events": [
+                {"t": "2026-08-23T12:00:00Z", "type": "HW", "heightM": 7.1},
+                {"t": "2026-08-23T18:00:00Z", "type": "NW", "heightM": 4.6},
+                {"t": "2026-08-28T12:00:00Z", "type": "HW", "heightM": 7.2},
+                {"t": "2026-08-28T18:00:00Z", "type": "NW", "heightM": 4.5},
+            ],
+        }
+        stale = MODULE._valid_tide_cache(value, fetched + dt.timedelta(hours=49))
+        self.assertTrue(stale["stale"])
+        self.assertEqual(stale["source"], "BSH")
+        self.assertEqual(stale["referenceLevel"], "PNP")
+        self.assertNotIn("latitude", json.dumps(stale))
+        self.assertNotIn("longitude", json.dumps(stale))
+        self.assertIsNone(MODULE._valid_tide_cache(value, fetched + dt.timedelta(days=8)))
+
+    def test_tide_failure_has_six_hour_backoff_and_keeps_valid_matching_cache(self):
+        clock = {"now": dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)}
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            (base / "tide-stations.json").write_bytes(BSH_OVERVIEW)
+            cache = {
+                "schema": 1,
+                "station": {"id": "900P", "name": "Nordsee Testpegel", "distanceKm": 0.0},
+                "updatedUtc": "2026-08-18T12:00:00Z",
+                "referenceLevel": "PNP",
+                "events": [
+                    {"t": "2026-08-20T12:30:00Z", "type": "HW", "heightM": 7.31},
+                    {"t": "2026-08-20T18:45:00Z", "type": "NW", "heightM": 4.68},
+                ],
+            }
+            MODULE.save_json(base / "tides.json", cache)
+            calls = []
+
+            def offline(url, _maximum):
+                calls.append(url)
+                raise OSError("offline")
+
+            provider = MODULE.WeatherProvider(
+                cache_path=base / "weather.json",
+                catalog_path=base / "stations.cfg",
+                station_config_path=base / "manual.conf",
+                tide_cache_path=base / "tides.json",
+                tide_catalog_path=base / "tide-stations.json",
+                download=offline,
+                now=lambda: clock["now"],
+            )
+            first = provider._tides_for_position((53.5, 8.1))
+            clock["now"] += dt.timedelta(hours=1)
+            second = provider._tides_for_position((53.5, 8.1))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(first["station"]["id"], "900P")
+            self.assertEqual(second["station"]["id"], "900P")
+
     def test_kmz_rejects_multiple_or_unsafe_kml_members(self):
         with self.assertRaises(ValueError):
             MODULE.parse_mosmix_kmz(b"x" * (MODULE.MAX_KMZ_BYTES + 1))
@@ -241,6 +386,9 @@ class CamperControlWeatherTest(unittest.TestCase):
     def test_retry_and_refresh_intervals_are_bounded(self):
         self.assertEqual(MODULE.RETRY_SECONDS, (900, 1800, 3600, 10800))
         self.assertEqual(MODULE.REFRESH_SECONDS, 21600)
+        self.assertEqual(MODULE.TIDE_REFRESH_SECONDS, 86400)
+        self.assertEqual(MODULE.TIDE_RETRY_SECONDS, 21600)
+        self.assertEqual(MODULE.TIDE_MAX_DISTANCE_KM, 60.0)
 
 
 if __name__ == "__main__":
