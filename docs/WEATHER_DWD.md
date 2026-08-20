@@ -30,36 +30,55 @@ vorhandene zukünftige Werte bleiben sichtbar.
 
 ## Optionale Ebbe-/Flutdaten vom BSH
 
-CamperControl nutzt zusätzlich ausschließlich die JSON-Daten, die auch die
-offizielle Website des Bundesamts für Seeschifffahrt und Hydrographie (BSH)
-anzeigt:
+CamperControl verwendet ausschließlich die dokumentierte OGC-API des
+Bundesamts für Seeschifffahrt und Hydrographie (BSH):
 
-- Katalog: <https://gezeiten.bsh.de/data/tides_overview.json>
-- Pegel: `https://gezeiten.bsh.de/data/DE_{BSHNR links auf 5 Zeichen mit _ aufgefüllt}_tides.json`
-- Quelle/Attribution: `© Bundesamt für Seeschifffahrt und Hydrographie (BSH)`
+- Landing/OpenAPI: <https://gdi.bsh.de/ldproxy/rest/services/WaterLevelForecast>
+- Collection: `waterlevelforecastdata`
+- Pegel: `.../collections/waterlevelforecastdata/items/{featureId}?f=json`
+- Parametervertrag (Stand 27.05.2026):
+  <https://www2.bsh.de/aktdat/wvd/api/parameter_documentation.pdf>
+- Lizenz: CC BY 4.0; sichtbare Attribution:
+  `© Bundesamt für Seeschifffahrt und Hydrographie (BSH)`
 
-`gauge_group:3` (Ostsee) wird ausdrücklich verworfen. Nur Gruppen 1 und 2 der
-Nordsee beziehungsweise ihrer tidebeeinflussten Flüsse sind auswählbar. Der
-nächste Pegel wird aus dem aktuellen GX-GPS-Fix bestimmt. Ab mehr als 60 km
-Entfernung fehlt `tides` vollständig; so erscheint im Binnenland keine nur
-geometrisch „nächste“ Gezeitenstation. Die exakten GPS-Koordinaten werden nie
-persistiert oder geloggt. Nur Stations-ID/-name und die auf 0,1 km gerundete
-Entfernung liegen im kompakten Tide-Cache.
+Die API kennzeichnet die Region jedes Pegels direkt. Es werden ausschließlich
+Features mit `region:"north_sea"`, `licence:"CC BY 4.0"`, Punktgeometrie und
+zukünftigen HW-/NW-Daten ausgewählt; `baltic_sea` wird fail-closed verworfen.
+Der Cerbo sucht in wachsenden 10-/25-/60-km-Bounding-Boxes. Zuerst wird mit
+`result-type=hitsOnly` nur die Trefferzahl gelesen, danach die kleinste
+nichtleere Box in Seiten von höchstens zehn Features. Mehr als 48 Treffer,
+mehr als 1,5 MiB pro Seite oder 4 MiB für die gesamte Auswahl brechen die
+Suche ab. Ab mehr als 60 km Entfernung fehlt `tides` vollständig.
 
-Die BSH-Rohdaten enthalten Jahresobjekte und unter
-`hwnw_prediction.data` Ereignisse mit `timestamp`, `height` (cm), `type`
-(`HW`/`NW`), `moon` und `phase`. CamperControl übernimmt ausschließlich
-zukünftige HW/NW, rechnet cm in Meter um und verlangt das eindeutige
-Bezugsniveau `PNP` (Pegelnullpunkt). Eine Höhe ist daher **keine Wassertiefe**.
-Fehlt ein gültiges HW-/NW-Paar oder ist das Bezugsniveau nicht eindeutig, wird
-der Tide-Teil fail-closed ausgeblendet.
+Der aktuelle GPS-Fix existiert nur im Arbeitsspeicher und in der daraus
+gebildeten BSH-Bounding-Box; er wird nie persistiert oder geloggt. Im atomaren
+Tide-Cache stehen nur die amtlichen Stationskoordinaten, Feature-ID/-name und
+die auf 0,1 km gerundete aktuelle Entfernung. Solange der Pegel höchstens
+10 km entfernt bleibt, kann seine gecachte ID direkt wiederverwendet werden.
 
-Die Rohzeit steht beim BSH ganzjährig mit explizitem Offset `+01:00` (MEZ),
-auch im Sommer. Der Provider deutet sie nicht als lokale Sommerzeit um, sondern
-konvertiert den angegebenen Zeitpunkt verlustfrei nach UTC (`Z`). Erst der
-Client formatiert UTC in seine Gerätezeitzone. Beispiel: BSH
-`2026-08-20 13:30:00+01:00` wird `2026-08-20T12:30:00Z` und in
-`Europe/Berlin` als 14:30 MESZ angezeigt.
+`properties.high_water_low_water` liefert zukünftige Ereignisse mit
+`event_timestamp`, `event` (`HW`/`NW`) und `tidal_prediction_value`. Für
+`nextHigh`/`nextLow` wird bewusst diese amtliche Gezeitenvorausberechnung
+verwendet; `forecast_value` und MOS-Werte werden nicht stillschweigend mit der
+astronomischen Gezeitenhöhe vermischt. Fehlt ein HW- oder NW-Typ, werden seine
+Extrema aus `curve.tidal_prediction` abgeleitet. Alle Höhen sind laut
+Parameterdokumentation Zentimeter über dem lokalen Pegelnullpunkt (PNP), werden
+in Meter umgerechnet und sind **keine Wassertiefe**.
+
+Für die 24-Stunden-Kurve wird pro Rohpunkt zuerst
+`curve.automated_curve_forecast` verwendet (automatisch erzeugte
+Wasserstandsprognose des BSH), bei fehlendem/ungültigem Wert ausschließlich
+`curve.tidal_prediction`. `measurement` wird für die Zukunft nicht verwendet.
+Die etwa zehnminütige Rohkurve bleibt nur während des Parsens im RAM. Der Cache
+enthält höchstens 32 gleichmäßig reduzierte Punkte für 30 Stunden; veröffentlicht
+werden höchstens 25 chronologisch sortierte Punkte für jetzt bis +24 Stunden.
+
+Alle Zeitfelder tragen laut BSH-Vertrag einen expliziten UTC-Offset. Der
+Provider übernimmt diesen Offset unverändert, normalisiert anschließend nach
+UTC (`Z`) und erfindet keine Zeitzone. Beispiel:
+`2026-08-20 14:30:00+02:00` wird `2026-08-20T12:30:00Z`. Winterwerte mit
+`+01:00` werden nach derselben Regel verarbeitet; erst der Client formatiert
+UTC in seine Gerätezeitzone.
 
 ## Transportvertrag
 
@@ -78,6 +97,8 @@ Client formatiert UTC in seine Gerätezeitzone. Beispiel: BSH
   - `station:{id,name,distanceKm}`
   - `nextHigh:{t,heightM}` und `nextLow:{t,heightM}`; beide Zeiten sind UTC,
     `heightM` darf bei einem Pegel ohne Höhenangabe `null` sein
+  - optional `curve:[{t,heightM},...]`: höchstens 25 UTC-Punkte für jetzt bis
+    +24 Stunden, chronologisch, Meter über PNP
 
 `maxHourlyPrecipProbabilityPct` ist bewusst keine mathematische
 Tageswahrscheinlichkeit. Fehlwerte bleiben `null` und werden nie als Null
@@ -88,6 +109,9 @@ und 16 KiB) und veröffentlicht ihn als `state.weather` für Dashboard und Ford
 SYNC. Dieser read-only Eingang ersetzt die zwei nicht verwendeten
 Abwasser-Nodes, sodass der Master bei 358 Nodes bleibt. Die D-Bus-Bridge lässt
 `weather` in `compact_state()` bewusst aus und verhindert damit Feedback.
+Sollte ein außergewöhnlich großer DWD-Snapshot zusammen mit den Gezeiten die
+16-KiB-Grenze erreichen, entfällt zuerst nur `tides.curve`, danach nötigenfalls
+der gesamte optionale Tide-Teil; der DWD-Snapshot bleibt verfügbar.
 
 ## Betrieb und Fehlerverhalten
 
@@ -100,11 +124,13 @@ extrahiert.
 
 Ein BSH-Fehler ist additiv und lässt einen erfolgreichen DWD-Snapshot nicht
 scheitern. Der BSH-Teil versucht frühestens beim nächsten sechs-stündlichen
-Wetterzyklus erneut (kein schneller Zusatz-Timer). Ein erfolgreich geladener
-Pegel wird 24 Stunden genutzt, nach 48 Stunden als `stale:true` markiert und
-nach sieben Tagen fail-closed entfernt. Der Stationskatalog wird höchstens alle
-30 Tage erneuert. Bei Netzfehlern bleiben nur ein gültiger Cache derselben
-GPS-basiert ausgewählten Station und noch zukünftige Ereignisse nutzbar.
+Wetterzyklus erneut (kein schneller Zusatz-Timer). Eine erfolgreiche
+Stationsantwort wird sechs Stunden genutzt und danach mit ihrer gecachten
+HTTP-`ETag` bedingt abgefragt; ein unveränderter Stand liefert `304` ohne
+JSON-Payload. Nach 48 Stunden wird der Tide-Teil als `stale:true` markiert und
+nach sieben Tagen fail-closed entfernt. Bei Netzfehlern bleiben nur ein
+gültiger Cache derselben GPS-basiert ausgewählten Station und noch zukünftige
+Ereignisse nutzbar.
 
 Für einen manuellen Stationstest:
 
@@ -130,15 +156,19 @@ aus dem lokalen Cache gelesen.
   `mosmix-stations-v1.cfg` (Downloadlimit 2 MiB). KMZ/KML werden nur im RAM
   verarbeitet und nie auf Flash geschrieben; temporäre Cachedateien werden
   nach `os.replace()` entfernt.
-- Für BSH kommen atomar `bsh-tides-overview-v1.json` (Limit 128 KiB) und der
-  normalisierte `bsh-tides-v1.json` (Limit 16 KiB, höchstens 32 zukünftige
-  Ereignisse) hinzu. Das Pegel-Jahres-JSON hat ein Downloadlimit von 2 MiB,
-  wird nur im RAM verarbeitet und nie auf Flash abgelegt. Regulär fällt
-  höchstens ein Pegelabruf pro 24 Stunden an.
+- Für BSH kommt atomar nur `bsh-tides-v1.json` hinzu (Limit 16 KiB, höchstens
+  32 zukünftige Ereignisse und 32 stündlich reduzierte Kurvenpunkte). Die
+  OGC-Rohkurve wird nie auf Flash geschrieben. Hits-Antworten sind auf 16 KiB,
+  Stationsseiten auf 1,5 MiB je Seite/4 MiB insgesamt und der direkte Pegel auf
+  512 KiB dekomprimiert begrenzt. Gzip wird mit getrenntem komprimiertem und
+  dekomprimiertem Limit verarbeitet. Regulär fällt höchstens ein bedingter
+  Pegelabruf pro sechs Stunden an; `304` spart den Payload.
 - KMZ-Downloads sind auf 1 MiB, entpacktes KML auf 4 MiB begrenzt. Die
   Vorhersage enthält maximal 48 Stunden und sechs Tage.
-- GPS-Koordinaten existieren nur während der Stationsauswahl im Arbeitsspeicher.
-  Weder Cache noch D-Bus-Payload oder Log enthalten Breite/Länge.
+- Der GX-GPS-Fix existiert nur während der Stationsauswahl im Arbeitsspeicher
+  und der HTTPS-Bounding-Box. Weder Cache, D-Bus-Payload noch Log enthalten den
+  Fix. Nur die öffentlichen Koordinaten des ausgewählten BSH-Pegels dürfen im
+  internen Cache stehen; sie werden nicht veröffentlicht.
 - Wetterfehler ändern nicht den 1-Hz-Node-RED-Zustandspoller und erzeugen keine
   Rückkopplung in den CamperControl-Flow. Der Wetterthread wartet unabhängig
   mit `Event.wait()` und schreibt keine periodischen Node-RED-Dateien.
@@ -155,24 +185,24 @@ Offizielle Primärquellen:
   <https://www.dwd.de/DE/leistungen/opendata/faqs_opendata.html>
 - Vorgabe für die Quellenangabe:
   <https://www.dwd.de/DE/service/rechtliche_hinweise/vorlagen_quellenangabe.html>
-- BSH-Gezeitenübersicht, amtliche Gezeitendaten und Haftungshinweis:
-  <https://gezeiten.bsh.de/>
-- BSH-Bedingungen für digitale Daten (auf der BSH-Seite verlinktes
-  Entgeltverzeichnis einschließlich AGB und gesonderter Nutzungsbedingungen):
-  <https://www.bsh.de/DE/Das_BSH/Gebuehren_Preise_Liz/Gebuehren_und_Preise/_Anlagen/Downloads/Entgeltverzeichnis-digitale-Daten.html>
+- BSH WaterLevelForecast, OGC-Landing und CC-BY-4.0-Nutzungshinweise:
+  <https://gdi.bsh.de/ldproxy/rest/services/WaterLevelForecast>
+- BSH OpenAPI 3.0.3:
+  <https://gdi.bsh.de/ldproxy/rest/services/WaterLevelForecast/api?lang=en&f=json>
+- BSH-Parameterdokumentation:
+  <https://www2.bsh.de/aktdat/wvd/api/parameter_documentation.pdf>
 
 Rechtlicher Quellenhinweis in allen sichtbaren UIs und im JSON-Feld
 `attribution`: `Quelle: Deutscher Wetterdienst`. Die Tageswerte sind aus den
 stündlichen DWD-Einzelwerten berechnet; `sun` ist eine lokale astronomische
 Berechnung und kein DWD-Parameter.
 
-Die sichtbaren BSH-Seiten kennzeichnen die Werte als amtliche
-Gezeitenvorausberechnungen gemäß §1 SeeAufG, übernehmen dafür keine Gewähr und
-weisen darauf hin, dass aktuelle Windverhältnisse nicht einbezogen werden. Die
-für Downloadprodukte geltenden AGB/Nutzungsbedingungen bleiben zu beachten.
-CamperControl umgeht keinen zustimmungspflichtigen Download: Es liest nur die
-für die öffentliche Website sichtbaren JSON-Daten, speichert keinen
-Jahresdatensatz dauerhaft und transportiert ausschließlich das nächste HW/NW
-mit BSH-Attribution. Da diese JSON-Endpunkte keine versionierte öffentliche API
-darstellen, bleibt eine mögliche künftige Vertrags-/Formatänderung ein
-explizites Betriebsrisiko; der Parser blendet bei Abweichungen fail-closed aus.
+Die OGC-Landingpage kennzeichnet den Datensatz als frei und ohne Registrierung
+abrufbaren hochwertigen Datensatz unter CC BY 4.0. CamperControl nennt den BSH,
+verlinkt die Lizenz und beschreibt hier seine Änderungen (Auswahl des nächsten
+Pegels, UTC-Normalisierung, cm→m und Kurvenreduktion). Es gibt keinen Abruf
+hinter einer AGB-Checkbox. Die BSH-Parameterdokumentation weist zugleich darauf
+hin, dass API-Informationen falsch oder veraltet sein können und die offiziell
+veröffentlichten Vorhersagen auf `www.bsh.de` nicht ersetzen. Die Anzeige ist
+daher informativ; unerwartete Felder, Einheiten, Regionen, Lizenzen oder
+Größenüberschreitungen werden fail-closed ausgeblendet.

@@ -1,30 +1,60 @@
 {
-  "copyright_note": "©Bundesamt für Seeschifffahrt und Hydrographie (BSH). Das BSH übernimmt für die angegebenen Informationen keine Gewähr.",
-  "publications": {},
-  "gauges": [
+  "type": "FeatureCollection",
+  "numberReturned": 3,
+  "numberMatched": 3,
+  "timeStamp": "2026-08-20T10:00:00Z",
+  "features": [
     {
-      "station_name": "Nordsee Testpegel",
-      "bshnr": "900P",
-      "latitude": 53.5,
-      "longitude": 8.1,
-      "gauge_group": 1,
-      "seo_id": "nordsee_testpegel"
+      "type": "Feature",
+      "id": "northsea_test_gauge",
+      "geometry": {"type": "Point", "coordinates": [8.1, 53.5]},
+      "properties": {
+        "gauge_label": "Nordsee Testpegel",
+        "region": "north_sea",
+        "area": "Testküste",
+        "licence": "CC BY 4.0",
+        "latitude": 53.5,
+        "longitude": 8.1,
+        "high_water_low_water": [
+          {"event_timestamp": "2026-08-20 14:30:00+02:00", "event": "HW", "tidal_prediction_value": "731"},
+          {"event_timestamp": "2026-08-20 20:45:00+02:00", "event": "NW", "tidal_prediction_value": "468"}
+        ],
+        "curve": []
+      }
     },
     {
-      "station_name": "Interpolierter Nordsee Testpegel",
-      "bshnr": "901P",
-      "latitude": 54.0,
-      "longitude": 8.6,
-      "gauge_group": 2,
-      "seo_id": "nordsee_testpegel_interpoliert"
+      "type": "Feature",
+      "id": "northsea_far_gauge",
+      "geometry": {"type": "Point", "coordinates": [8.6, 54.0]},
+      "properties": {
+        "gauge_label": "Entfernter Nordsee Testpegel",
+        "region": "north_sea",
+        "licence": "CC BY 4.0",
+        "latitude": 54.0,
+        "longitude": 8.6,
+        "high_water_low_water": [
+          {"event_timestamp": "2026-08-20 14:45:00+02:00", "event": "HW", "tidal_prediction_value": "650"},
+          {"event_timestamp": "2026-08-20 21:00:00+02:00", "event": "NW", "tidal_prediction_value": "390"}
+        ],
+        "curve": []
+      }
     },
     {
-      "station_name": "Ostsee Testpegel",
-      "bshnr": "902P",
-      "latitude": 53.51,
-      "longitude": 8.11,
-      "gauge_group": 3,
-      "seo_id": "ostsee_testpegel"
+      "type": "Feature",
+      "id": "baltic_test_gauge",
+      "geometry": {"type": "Point", "coordinates": [8.11, 53.51]},
+      "properties": {
+        "gauge_label": "Ostsee Testpegel",
+        "region": "baltic_sea",
+        "licence": "CC BY 4.0",
+        "latitude": 53.51,
+        "longitude": 8.11,
+        "high_water_low_water": [
+          {"event_timestamp": "2026-08-20 14:00:00+02:00", "event": "HW", "tidal_prediction_value": "510"},
+          {"event_timestamp": "2026-08-20 20:00:00+02:00", "event": "NW", "tidal_prediction_value": "490"}
+        ],
+        "curve": []
+      }
     }
   ]
 }

@@ -1,59 +1,49 @@
 {
-  "station_name": "Nordsee Testpegel",
-  "bshnr": "900P",
-  "latitude": 53.5,
-  "longitude": 8.1,
-  "gauge_group": 1,
-  "seo_id": "nordsee_testpegel",
-  "pegelonline_uuid": "00000000-0000-0000-0000-000000000000",
-  "has_wvd": true,
-  "years": [
-    {
-      "2026": {
-        "level_tidalvalues": "PNP",
-        "has_height": true,
-        "has_curve": false,
-        "hwnw_prediction": {
-          "level": "PNP",
-          "data": [
-            {
-              "timestamp": "2026-08-20 05:05:00+01:00",
-              "height": 470,
-              "type": "NW",
-              "moon": null,
-              "phase": "MT"
-            },
-            {
-              "timestamp": "2026-08-20 13:30:00+01:00",
-              "height": 731,
-              "type": "HW",
-              "moon": null,
-              "phase": "MT"
-            },
-            {
-              "timestamp": "2026-08-20 19:45:00+01:00",
-              "height": 468,
-              "type": "NW",
-              "moon": null,
-              "phase": "MT"
-            },
-            {
-              "timestamp": "2026-08-21 01:55:00+01:00",
-              "height": 729,
-              "type": "HW",
-              "moon": null,
-              "phase": "MT"
-            },
-            {
-              "timestamp": "2026-08-21 08:10:00+01:00",
-              "height": null,
-              "type": "NW",
-              "moon": null,
-              "phase": "MT"
-            }
-          ]
-        }
-      }
-    }
-  ]
+  "type": "Feature",
+  "id": "northsea_test_gauge",
+  "geometry": {"type": "Point", "coordinates": [8.1, 53.5]},
+  "properties": {
+    "gauge_label": "Nordsee Testpegel",
+    "licence": "CC BY 4.0",
+    "copyright": {
+      "en": "© Federal Maritime and Hydrographic Agency (BSH). No warranty."
+    },
+    "region": "north_sea",
+    "area": "Testküste",
+    "state": "Niedersachsen",
+    "latitude": 53.5,
+    "longitude": 8.1,
+    "gaugezero_relative_to_nhn": -500.0,
+    "mean_high_water": 720.0,
+    "mean_low_water": 470.0,
+    "forecast_timestamp": "2026-08-20 11:45:00+02:00",
+    "automated_curveforecast_timestamp": "2026-08-20 12:00:00+02:00",
+    "high_water_low_water": [
+      {"event_timestamp": "2026-08-20 14:30:00+02:00", "event": "HW", "tidal_prediction_value": "731", "forecast_value": 742, "forecast_uncertainty": 10.0},
+      {"event_timestamp": "2026-08-20 20:45:00+02:00", "event": "NW", "tidal_prediction_value": "468", "forecast_value": 480, "forecast_uncertainty": 10.0},
+      {"event_timestamp": "2026-08-21 02:00:00+02:00", "event": "HW", "tidal_prediction_value": "729", "mos_forecast_r0_value": 735},
+      {"event_timestamp": "2026-08-21 08:15:00+02:00", "event": "NW", "tidal_prediction_value": "470", "mos_forecast_r0_value": 478},
+      {"event_timestamp": "2026-08-21 14:30:00+02:00", "event": "HW", "tidal_prediction_value": "730"}
+    ],
+    "curve": [
+      {"timestamp": "2026-08-20 12:10:00+02:00", "tidal_prediction": "600", "automated_curve_forecast": "610", "measurement": "605"},
+      {"timestamp": "2026-08-20 14:00:00+02:00", "tidal_prediction": "731", "automated_curve_forecast": "740"},
+      {"timestamp": "2026-08-20 16:00:00+02:00", "tidal_prediction": "650", "automated_curve_forecast": "660"},
+      {"timestamp": "2026-08-20 18:00:00+02:00", "tidal_prediction": "550", "automated_curve_forecast": "560"},
+      {"timestamp": "2026-08-20 20:00:00+02:00", "tidal_prediction": "468", "automated_curve_forecast": "480"},
+      {"timestamp": "2026-08-20 22:00:00+02:00", "tidal_prediction": "550", "automated_curve_forecast": "560"},
+      {"timestamp": "2026-08-21 00:00:00+02:00", "tidal_prediction": "650", "automated_curve_forecast": "660"},
+      {"timestamp": "2026-08-21 02:00:00+02:00", "tidal_prediction": "729", "automated_curve_forecast": "735"},
+      {"timestamp": "2026-08-21 04:00:00+02:00", "tidal_prediction": "650", "automated_curve_forecast": "660"},
+      {"timestamp": "2026-08-21 06:00:00+02:00", "tidal_prediction": "550", "automated_curve_forecast": "560"},
+      {"timestamp": "2026-08-21 08:00:00+02:00", "tidal_prediction": "470", "automated_curve_forecast": "480"},
+      {"timestamp": "2026-08-21 10:00:00+02:00", "tidal_prediction": "560", "automated_curve_forecast": "570"},
+      {"timestamp": "2026-08-21 12:00:00+02:00", "tidal_prediction": "680", "automated_curve_forecast": "690"},
+      {"timestamp": "2026-08-21 14:00:00+02:00", "tidal_prediction": "730", "automated_curve_forecast": null},
+      {"timestamp": "2026-08-21 16:00:00+02:00", "tidal_prediction": "650", "automated_curve_forecast": "660"},
+      {"timestamp": "2026-08-21 18:00:00+02:00", "tidal_prediction": "540", "automated_curve_forecast": "550"},
+      {"timestamp": "2026-08-21 20:00:00+02:00", "tidal_prediction": "465", "automated_curve_forecast": "475"},
+      {"timestamp": "2026-08-21 22:00:00+02:00", "tidal_prediction": "550", "automated_curve_forecast": "560"}
+    ]
+  }
 }
