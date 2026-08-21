@@ -172,7 +172,7 @@ check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.n
 check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
-check(flows.length === 361, 'Master bleibt exakt der validierte 361-Node-Flow');
+check(flows.length === 371, 'Master bleibt exakt der validierte 371-Node-Flow');
 check(packageJson.version === '4.5.0', 'Releaseversion ist 4.5.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
@@ -871,25 +871,58 @@ check(staleScanOutput?.[2]?.payload === 'scan' && staleScanValues.get('indevoltS
 
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
-  ruuvi_ceiling_temperature_in: ['/Temperature', 'victron-input-temperature'],
-  ruuvi_ceiling_humidity_in: ['/Humidity', 'victron-input-custom'],
-  ruuvi_ceiling_pressure_in: ['/Pressure', 'victron-input-custom'],
-  ruuvi_ceiling_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom'],
-  ruuvi_ceiling_deviceName_in: ['/DeviceName', 'victron-input-custom']
+  ruuvi_ceiling_temperature_in: ['/Temperature', 'victron-input-temperature', 'com.victronenergy.temperature/24', false],
+  ruuvi_ceiling_humidity_in: ['/Humidity', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_pressure_in: ['/Pressure', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_deviceName_in: ['/DeviceName', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_floor_temperature_in: ['/Temperature', 'victron-input-temperature', 'com.victronenergy.temperature/25', false],
+  ruuvi_floor_humidity_in: ['/Humidity', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_pressure_in: ['/Pressure', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_deviceName_in: ['/DeviceName', 'victron-input-custom', 'com.victronenergy.temperature/25', true]
 };
-for (const [id, [pathValue, expectedType]] of Object.entries(ruuviNodes)) {
+for (const [id, [pathValue, expectedType, service, onlyChanges]] of Object.entries(ruuviNodes)) {
   const node = get(id);
   check(node.type === expectedType, `${id} nutzt ${expectedType}`);
-  check(node.service === 'com.victronenergy.temperature/24', `${id} ist fest auf Temperaturdienst /24`);
+  check(node.service === service, `${id} ist fest auf ${service}`);
   check(node.path === pathValue, `${id} liest ${pathValue}`);
-  check(node.onlyChanges === true, `${id} sendet nur Änderungen`);
+  check(node.onlyChanges === onlyChanges, `${id} nutzt die erwartete Wiederholungsstrategie`);
 }
-check(get('ruuvi_manual_adapter').type === 'function', 'Ruuvi-FB31-Werte werden ohne Discovery normalisiert');
+check(get('ruuvi_manual_adapter').type === 'function', 'Ruuvi-FB31-/B7B8-Werte werden ohne Discovery normalisiert');
 check(get('ruuvi_manual_adapter').func.includes("ceilingService: 'com.victronenergy.temperature/24'"), 'Deckenrolle ist fest /24');
-check(get('ruuvi_manual_adapter').func.includes("floorService: ''"), 'Bodenrolle bleibt unkonfiguriert/offline');
+check(get('ruuvi_manual_adapter').func.includes("floorService: 'com.victronenergy.temperature/25'"), 'Bodenrolle ist fest /25');
+check(get('ruuvi_manual_adapter').func.includes("floorConfigured: true"), 'Bodenrolle wird als konfiguriert veröffentlicht');
+check(get('ruuvi_manual_adapter').func.includes("flow.set('camperTemperatureDiscovery'"), 'Feste Rollen ersetzen alte Discovery-Metadaten');
 check(!flows.some(node => String(node.id).includes('ruuvi_discovery')), 'Keine Ruuvi-Discovery-Nodes');
 check(!sourceText.includes('read-temperature-sensors.sh'), 'Kein Ruuvi-Shellprozess');
 check(!sourceText.includes('/victron/cache'), 'Kein Ruuvi-Cache-Polling');
+
+const ruuviValues = new Map();
+const ruuviFlow = { get: key => ruuviValues.get(key), set: (key, value) => ruuviValues.set(key, value) };
+const runRuuvi = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('ruuvi_manual_adapter').func || '');
+const ruuviSeen = Date.now();
+const feedRuuvi = (role, values) => {
+  let output = null;
+  for (const [field, payload] of Object.entries(values)) {
+    const result = runRuuvi({ topic: `ruuvi.${role}.${field}`, payload, _camperSeen: ruuviSeen }, ruuviFlow, {}, {}, {}, {});
+    if (result) output = result;
+  }
+  return output;
+};
+feedRuuvi('ceiling', { temperature: 24.4, humidity: 56.6, pressure: 1010.5, batteryVoltage: 2.696, deviceName: 'Ruuvi FB31' });
+const ruuviOutput = feedRuuvi('floor', { temperature: 22.2, humidity: 60.0, pressure: 1011.0, batteryVoltage: 3.298, deviceName: 'Ruuvi B7B8' });
+const ruuviMessages = Array.isArray(ruuviOutput?.[0]) ? ruuviOutput[0] : [];
+const ruuviCeiling = ruuviMessages.find(message => message.topic === 'ruuvi1')?.payload;
+const ruuviFloor = ruuviMessages.find(message => message.topic === 'ruuvi2')?.payload;
+const ruuviComfort = ruuviMessages.find(message => message.topic === 'ruuvi3')?.payload;
+const ruuviAssignment = ruuviValues.get('camperTemperatureAssignment') || {};
+const ruuviDiscovery = ruuviValues.get('camperTemperatureDiscovery') || {};
+check(ruuviCeiling?.service === 'com.victronenergy.temperature/24' && ruuviCeiling?.deviceName === 'Ruuvi FB31', 'FB31 wird als Deckenwert veröffentlicht');
+check(ruuviFloor?.service === 'com.victronenergy.temperature/25' && ruuviFloor?.deviceName === 'Ruuvi B7B8' && ruuviFloor?.temp === 22.2, 'B7B8 wird als Bodenwert veröffentlicht');
+check(ruuviComfort?.temp === 23.3 && ruuviComfort?.source === 'calculated', 'Komfortwert ist der Mittelwert aus Decke und Boden');
+check(ruuviAssignment.floorService === 'com.victronenergy.temperature/25' && ruuviAssignment.floorConfigured === true, 'Temperaturzuordnung enthält den aktiven Bodensensor');
+check(ruuviDiscovery.assignment?.floorService === 'com.victronenergy.temperature/25' && ruuviDiscovery.candidates?.length === 2, 'API-Metadaten enthalten beide festen Ruuvi-Dienste');
 
 check(get('camper_service_status_tick').repeat === '60', 'Service-Status läuft höchstens alle 60 s');
 check(get('camper_service_status_guard').type === 'function', 'Service-Status besitzt eine Prozesssperre');

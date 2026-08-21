@@ -43,40 +43,47 @@ const wifiAssertions = {
   noPasswordFields: networks.every(item => !Object.keys(item).some(key => /pass|psk|secret/i.test(key)))
 };
 
-// FB31 wird aus dem festen Venus-Dienst /24 gelesen; der Test simuliert nur
-// die Verkabelung der nativen Input-Nodes zum Adapter und verändert nichts.
-const temperatureService = 'com.victronenergy.temperature/24';
-const temperatureValues = {
-  deviceName: read(temperatureService, '/DeviceName'),
-  batteryVoltage: read(temperatureService, '/BatteryVoltage'),
-  pressure: read(temperatureService, '/Pressure'),
-  humidity: read(temperatureService, '/Humidity'),
-  temperature: read(temperatureService, '/Temperature')
+// FB31 (/24) und B7B8 (/25) werden fest gelesen; der Test simuliert nur die
+// Verkabelung der nativen Input-Nodes zum Adapter und verändert nichts.
+const temperatureServices = {
+  ceiling: 'com.victronenergy.temperature/24',
+  floor: 'com.victronenergy.temperature/25'
 };
+const temperatureValues = Object.fromEntries(Object.entries(temperatureServices).map(([role, service]) => [role, {
+  deviceName: read(service, '/DeviceName'),
+  batteryVoltage: read(service, '/BatteryVoltage'),
+  pressure: read(service, '/Pressure'),
+  humidity: read(service, '/Humidity'),
+  temperature: read(service, '/Temperature')
+}]));
 let ruuviResult = null;
-for (const [field, value] of Object.entries(temperatureValues)) {
-  const result = run('ruuvi_manual_adapter', {
-    topic: `ruuvi.ceiling.${field}`,
-    payload: value,
-    _camperSeen: Date.now()
-  });
-  if (result) ruuviResult = result;
+for (const [role, values] of Object.entries(temperatureValues)) {
+  for (const [field, value] of Object.entries(values)) {
+    const result = run('ruuvi_manual_adapter', {
+      topic: `ruuvi.${role}.${field}`,
+      payload: value,
+      _camperSeen: Date.now()
+    });
+    if (result) ruuviResult = result;
+  }
 }
 const ruuviMessages = Array.isArray(ruuviResult) && Array.isArray(ruuviResult[0]) ? ruuviResult[0] : [];
 const assignment = store.get('camperTemperatureAssignment') || {};
 const ceilingMessage = ruuviMessages.find(msg => msg.topic === 'ruuvi1');
 const floorMessage = ruuviMessages.find(msg => msg.topic === 'ruuvi2');
+const comfortMessage = ruuviMessages.find(msg => msg.topic === 'ruuvi3');
 const ruuviAssertions = {
-  serviceExists: Boolean(cache[temperatureService]),
-  fixedCeilingService: assignment.ceilingService === temperatureService,
-  floorExplicitlyOffline: assignment.floorConfigured === false && assignment.floorService === '',
-  deviceNameIsFb31: String(temperatureValues.deviceName || '').toUpperCase().includes('FB31'),
-  temperatureRead: finite(temperatureValues.temperature),
-  humidityRead: finite(temperatureValues.humidity),
-  pressureRead: finite(temperatureValues.pressure),
-  batteryVoltageRead: finite(temperatureValues.batteryVoltage),
+  servicesExist: Object.values(temperatureServices).every(service => Boolean(cache[service])),
+  fixedCeilingService: assignment.ceilingService === temperatureServices.ceiling,
+  fixedFloorService: assignment.floorConfigured === true && assignment.floorService === temperatureServices.floor,
+  deviceNamesMatch: String(temperatureValues.ceiling.deviceName || '').toUpperCase().includes('FB31') && String(temperatureValues.floor.deviceName || '').toUpperCase().includes('B7B8'),
+  temperaturesRead: finite(temperatureValues.ceiling.temperature) && finite(temperatureValues.floor.temperature),
+  humidityRead: finite(temperatureValues.ceiling.humidity) && finite(temperatureValues.floor.humidity),
+  pressureRead: finite(temperatureValues.ceiling.pressure) && finite(temperatureValues.floor.pressure),
+  batteryVoltageRead: finite(temperatureValues.ceiling.batteryVoltage) && finite(temperatureValues.floor.batteryVoltage),
   ceilingOutputProduced: finite(ceilingMessage?.payload?.temp),
-  floorOutputOffline: floorMessage?.payload?.configured === false && floorMessage?.payload?.seen === 0
+  floorOutputProduced: finite(floorMessage?.payload?.temp) && floorMessage?.payload?.service === temperatureServices.floor,
+  comfortOutputProduced: finite(comfortMessage?.payload?.temp)
 };
 
 // Shelly und Orion werden nur gelesen. Der Test prüft reale Dienste/Pfade und
@@ -172,7 +179,12 @@ console.log(JSON.stringify({
   ok: failures.length === 0,
   liveReadOnly: true,
   wifi: { networkCount: networks.length, connectedSsid: connected?.ssid || '', state: wifi.external_wifi_state, signal: wifi.external_wifi_signal },
-  ruuvi: { service: temperatureService, deviceName: temperatureValues.deviceName, temperature: temperatureValues.temperature, floorConfigured: false },
+  ruuvi: {
+    ceiling: { service: temperatureServices.ceiling, deviceName: temperatureValues.ceiling.deviceName, temperature: temperatureValues.ceiling.temperature },
+    floor: { service: temperatureServices.floor, deviceName: temperatureValues.floor.deviceName, temperature: temperatureValues.floor.temperature },
+    comfortTemperature: comfortMessage?.payload?.temp,
+    floorConfigured: assignment.floorConfigured === true
+  },
   battery: { service: systemService, path: systemBatteryPowerPath, power: systemBatteryPower, snapshotTopic: 'battery.power' },
   shelly: { service: shellyService, powered: shellyPowered, state: shellyValue, expectedOfflineWithout230V: !shellyPowered },
   orion: { service: orionService, mode: read(orionService, '/Mode'), state: read(orionService, '/State'), voltage: read(orionService, '/Dc/0/Voltage') },

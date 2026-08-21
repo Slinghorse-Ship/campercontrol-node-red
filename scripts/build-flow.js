@@ -308,10 +308,9 @@ add({
   x: 1340, y: 3460, wires: []
 });
 
-// Ruuvi wird nicht gesucht. Der vorhandene Sensor FB31 ist fest und nativ dem
-// Victron-Temperaturdienst /24 als Deckenfühler zugeordnet. Ein Bodenfühler
-// bleibt bis zu seiner ausdrücklichen Service-Zuordnung offline; dadurch kann
-// sich die Rollenverteilung nach Neustarts oder neuen Bluetooth-Geräten nie
+// Ruuvi wird nicht gesucht. FB31 und B7B8 sind fest und nativ den Victron-
+// Temperaturdiensten /24 (Decke) und /25 (Boden) zugeordnet. Dadurch kann sich
+// die Rollenverteilung nach Neustarts oder neuen Bluetooth-Geräten nie
 // selbständig ändern.
 const ruuviLegacyIds = [
   'camper_ruuvi_discovery_tick', 'camper_ruuvi_discovery_exec',
@@ -323,23 +322,31 @@ const ruuviLegacyIds = [
   'ruuvi_ceiling_batteryVoltage_in', 'ruuvi_ceiling_batteryVoltage_topic',
   'ruuvi_ceiling_name_in', 'ruuvi_ceiling_name_topic',
   'ruuvi_ceiling_deviceName_in', 'ruuvi_ceiling_deviceName_topic',
+  'ruuvi_floor_temperature_in', 'ruuvi_floor_temperature_topic',
+  'ruuvi_floor_humidity_in', 'ruuvi_floor_humidity_topic',
+  'ruuvi_floor_pressure_in', 'ruuvi_floor_pressure_topic',
+  'ruuvi_floor_battery_in', 'ruuvi_floor_battery_topic',
+  'ruuvi_floor_batteryVoltage_in', 'ruuvi_floor_batteryVoltage_topic',
+  'ruuvi_floor_name_in', 'ruuvi_floor_name_topic',
+  'ruuvi_floor_deviceName_in', 'ruuvi_floor_deviceName_topic',
   'ruuvi_manual_adapter', 'ruuvi_manual_note'
 ];
 removeIds(ruuviLegacyIds);
-const ruuviService = 'com.victronenergy.temperature/24';
-const ruuviInput = (id, name, pathValue, type, y, topicId) => ({
+const ruuviInput = (id, name, service, serviceName, pathValue, type, y, topicId) => ({
   id,
   // Der eigentliche Temperaturwert nutzt den offiziellen spezialisierten
   // Victron-Knoten; Zusatzwerte benötigen die freie Pfadauswahl des Custom-
   // Eingangs, bleiben aber auf demselben fest ausgewählten Venus-Dienst.
   type: pathValue === '/Temperature' ? 'victron-input-temperature' : 'victron-input-custom',
   z: tabId,
-  service: ruuviService,
+  service,
   path: pathValue,
-  serviceObj: { service: ruuviService, name: 'Ruuvi FB31 · Decke' },
+  serviceObj: { service, name: serviceName },
   pathObj: { path: pathValue, type, name: pathValue },
   name,
-  onlyChanges: true,
+  // Temperatur muss auch bei unverändertem Messwert regelmäßig ankommen,
+  // damit ein ruhiger Raum nicht fälschlich als Sensorausfall gilt.
+  onlyChanges: pathValue !== '/Temperature',
   roundValues: '3',
   x: 245,
   y,
@@ -360,72 +367,138 @@ const ruuviTopic = (id, topic, y) => ({
   wires: [['ruuvi_manual_adapter']]
 });
 const ruuviFields = [
-  ['temperature', '/Temperature', 'number', 8650],
-  ['humidity', '/Humidity', 'number', 8695],
-  ['pressure', '/Pressure', 'number', 8740],
-  ['batteryVoltage', '/BatteryVoltage', 'number', 8785],
-  ['deviceName', '/DeviceName', 'string', 8830]
+  ['temperature', '/Temperature', 'number', 0],
+  ['humidity', '/Humidity', 'number', 45],
+  ['pressure', '/Pressure', 'number', 90],
+  ['batteryVoltage', '/BatteryVoltage', 'number', 135],
+  ['deviceName', '/DeviceName', 'string', 180]
 ];
-for (const [field, pathValue, type, y] of ruuviFields) {
-  add(ruuviInput(`ruuvi_ceiling_${field}_in`, `Ruuvi FB31 Decke · ${pathValue}`, pathValue, type, y, `ruuvi_ceiling_${field}_topic`));
-  add(ruuviTopic(`ruuvi_ceiling_${field}_topic`, `ruuvi.ceiling.${field}`, y));
+const ruuviRoles = [
+  { key: 'ceiling', service: 'com.victronenergy.temperature/24', deviceName: 'Ruuvi FB31', label: 'Decke', y: 8650 },
+  { key: 'floor', service: 'com.victronenergy.temperature/25', deviceName: 'Ruuvi B7B8', label: 'Boden', y: 8890 }
+];
+for (const role of ruuviRoles) {
+  for (const [field, pathValue, type, yOffset] of ruuviFields) {
+    const y = role.y + yOffset;
+    add(ruuviInput(`ruuvi_${role.key}_${field}_in`, `${role.deviceName} ${role.label} · ${pathValue}`, role.service, `${role.deviceName} · ${role.label}`, pathValue, type, y, `ruuvi_${role.key}_${field}_topic`));
+    add(ruuviTopic(`ruuvi_${role.key}_${field}_topic`, `ruuvi.${role.key}.${field}`, y));
+  }
 }
 add({
   id: 'ruuvi_manual_adapter', type: 'function', z: tabId,
-  name: 'Ruuvi fest zuordnen · Decke /24 · Boden nicht konfiguriert',
+  name: 'Ruuvi fest zuordnen · Decke /24 · Boden /25',
   func: String.raw`
 const unwrap = value => value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'value') ? value.value : value;
 const parts = String(msg.topic || '').split('.');
-if (parts.length !== 3 || parts[0] !== 'ruuvi' || parts[1] !== 'ceiling') return null;
+if (parts.length !== 3 || parts[0] !== 'ruuvi' || !['ceiling', 'floor'].includes(parts[1])) return null;
+const role = parts[1];
 const field = parts[2];
 const allowed = ['temperature', 'humidity', 'pressure', 'batteryVoltage', 'deviceName'];
 if (!allowed.includes(field)) return null;
+const definitions = {
+    ceiling: { service: 'com.victronenergy.temperature/24', label: 'Ruuvi Decke', fallbackName: 'Ruuvi FB31' },
+    floor: { service: 'com.victronenergy.temperature/25', label: 'Ruuvi Boden', fallbackName: 'Ruuvi B7B8' }
+};
 const raw = unwrap(msg.payload);
 const stored = flow.get('camperManualTemperatureSensors') || {};
-const ceiling = Object.assign({ configured: true, service: 'com.victronenergy.temperature/24', label: 'Ruuvi Decke' }, stored.ceiling || {});
-if (field === 'deviceName') ceiling.deviceName = String(raw == null ? '' : raw).trim().slice(0, 96);
+for (const [key, definition] of Object.entries(definitions)) {
+    stored[key] = Object.assign({ configured: true, service: definition.service, label: definition.label, seen: 0 }, stored[key] || {}, { configured: true, service: definition.service, label: definition.label });
+}
+const current = stored[role];
+if (field === 'deviceName') current.deviceName = String(raw == null ? '' : raw).trim().slice(0, 96);
 else if (raw != null && raw !== '' && typeof raw !== 'boolean' && Number.isFinite(Number(raw))) {
     const value = Number(raw);
-    if (field !== 'temperature' || (value >= -50 && value <= 80)) ceiling[field] = value;
+    if (field !== 'temperature' || (value >= -50 && value <= 80)) current[field] = value;
 }
-if (field === 'temperature' && Number.isFinite(Number(ceiling.temperature))) ceiling.seen = Number(msg._camperSeen || Date.now());
-stored.ceiling = ceiling;
-stored.floor = Object.assign({ configured: false, service: '', label: 'Ruuvi Boden', seen: 0 }, stored.floor || {}, { configured: false, service: '', seen: 0 });
+if (field === 'temperature' && Number.isFinite(Number(current.temperature))) current.seen = Number(msg._camperSeen || Date.now());
 flow.set('camperManualTemperatureSensors', stored);
-flow.set('camperTemperatureAssignment', {
+const number = value => value !== null && value !== '' && typeof value !== 'undefined' && Number.isFinite(Number(value)) ? Number(value) : null;
+const assignment = {
     mode: 'manual',
     ceilingService: 'com.victronenergy.temperature/24',
-    ceilingDeviceName: ceiling.deviceName || 'Ruuvi FB31',
-    floorService: '',
-    floorConfigured: false,
+    ceilingDeviceName: stored.ceiling.deviceName || 'Ruuvi FB31',
+    floorService: 'com.victronenergy.temperature/25',
+    floorDeviceName: stored.floor.deviceName || 'Ruuvi B7B8',
+    floorConfigured: true,
     updatedAt: Date.now()
+};
+flow.set('camperTemperatureAssignment', assignment);
+const configuredAssignment = {
+    ceilingService: assignment.ceilingService,
+    floorService: assignment.floorService
+};
+flow.set('camperTemperatureDiscovery', {
+    assignment: configuredAssignment,
+    configuredAssignment,
+    candidates: Object.entries(definitions).map(([key, definition]) => ({
+        service: definition.service,
+        temperature: number(stored[key].temperature),
+        deviceName: stored[key].deviceName || definition.fallbackName,
+        customName: '',
+        productName: 'RuuviTag',
+        connection: 'Bluetooth LE',
+        deviceInstance: definition.service.split('/').pop(),
+        humidity: number(stored[key].humidity),
+        pressure: number(stored[key].pressure),
+        batteryVoltage: number(stored[key].batteryVoltage),
+        isRuuvi: true,
+        score: 300,
+        label: definition.label
+    }))
 });
-if (!Number.isFinite(Number(ceiling.temperature)) || !Number.isFinite(Number(ceiling.seen))) return null;
-const reading = {
-    temp: Math.round(Number(ceiling.temperature) * 10) / 10,
-    humidity: Number.isFinite(Number(ceiling.humidity)) ? Number(ceiling.humidity) : null,
-    pressure: Number.isFinite(Number(ceiling.pressure)) ? Number(ceiling.pressure) : null,
-    batteryVoltage: Number.isFinite(Number(ceiling.batteryVoltage)) ? Number(ceiling.batteryVoltage) : null,
-    seen: Number(ceiling.seen),
-    label: 'Ruuvi Decke',
-    source: 'cerbo',
-    service: 'com.victronenergy.temperature/24',
-    deviceName: ceiling.deviceName || 'Ruuvi FB31'
+const reading = key => {
+    const definition = definitions[key];
+    const value = stored[key];
+    const temperature = number(value.temperature);
+    const seen = number(value.seen);
+    return {
+        temp: temperature == null ? null : Math.round(temperature * 10) / 10,
+        humidity: number(value.humidity),
+        pressure: number(value.pressure),
+        batteryVoltage: number(value.batteryVoltage),
+        seen: seen == null ? 0 : seen,
+        label: definition.label,
+        source: 'cerbo',
+        service: definition.service,
+        deviceName: value.deviceName || definition.fallbackName,
+        configured: true
+    };
+};
+const ceiling = reading('ceiling');
+const floor = reading('floor');
+const now = Date.now();
+const fresh = [ceiling, floor].filter(value => value.temp != null && value.seen > 0 && now - value.seen >= 0 && now - value.seen < 180000);
+if (!fresh.length) return null;
+const average = key => {
+    const values = fresh.map(value => number(value[key])).filter(value => value != null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+};
+const comfort = {
+    temp: Math.round(average('temp') * 10) / 10,
+    humidity: average('humidity'),
+    pressure: average('pressure'),
+    batteryVoltage: null,
+    seen: Math.max(...fresh.map(value => value.seen)),
+    label: fresh.length === 2 ? 'Raumwert · Mittel Decke/Boden' : 'Raumwert · ' + fresh[0].label.replace('Ruuvi ', ''),
+    source: fresh.length === 2 ? 'calculated' : 'cerbo',
+    service: fresh.length === 2 ? 'virtual:ruuvi-comfort' : fresh[0].service,
+    deviceName: fresh.length === 2 ? 'Ruuvi FB31 + B7B8' : fresh[0].deviceName,
+    configured: true
 };
 return [[
-    { topic: 'ruuvi1', payload: reading },
-    { topic: 'ruuvi2', payload: { temp: null, humidity: null, pressure: null, batteryVoltage: null, seen: 0, label: 'Ruuvi Boden · nicht konfiguriert', source: 'manual', service: '', configured: false } },
-    { topic: 'ruuvi3', payload: Object.assign({}, reading, { label: 'Raumwert · Decke' }) }
+    { topic: 'ruuvi1', payload: ceiling },
+    { topic: 'ruuvi2', payload: floor },
+    { topic: 'ruuvi3', payload: comfort }
 ]];
 `,
   outputs: 1, timeout: 0, noerr: 0, initialize: '', finalize: '', libs: [],
-  x: 875, y: 8740, wires: [['12f9ef01215ad8d3']]
+  x: 875, y: 8860, wires: [['12f9ef01215ad8d3']]
 });
 add({
   id: 'ruuvi_manual_note', type: 'comment', z: tabId,
-  name: 'Ruuvi fest: FB31 = Decke (/24). Boden erst nach eigener DeviceInstance manuell ergänzen.',
-  info: 'Keine automatische Suche und keine dynamische Rollenvergabe. Die fünf nativen Victron-Eingänge lesen ausschließlich com.victronenergy.temperature/24. Der zweite RuuviTag bleibt bis zur ausdrücklichen Zuordnung offline.',
-  x: 525, y: 8880, wires: []
+  name: 'Ruuvi fest: FB31 = Decke (/24), B7B8 = Boden (/25).',
+  info: 'Keine automatische Suche und keine dynamische Rollenvergabe. Je fünf native Victron-Eingänge lesen ausschließlich com.victronenergy.temperature/24 beziehungsweise /25.',
+  x: 525, y: 9130, wires: []
 });
 
 // Der verbliebene Service-Status darf niemals überlappen. Ein hängender Lauf
@@ -1301,7 +1374,7 @@ const cleanEmbeddedDefaults = source => source.replace(
     value.access = { scope: 'local-network', unrestricted: true };
     value.temperatureSensors = Object.assign({}, value.temperatureSensors || {}, {
       ceilingService: 'com.victronenergy.temperature/24',
-      floorService: ''
+      floorService: 'com.victronenergy.temperature/25'
     });
     const legacyClimateAutomation = value.climateAutomation || {};
     const climateControlMode = ['off', 'manual', 'auto'].includes(legacyClimateAutomation.controlMode)
@@ -1363,11 +1436,11 @@ settings.func = cleanEmbeddedDefaults(settings.func)
   )
   .replace(
     "    cfg.temperatureSensors = {\n        ceilingService: text(cfg.temperatureSensors && cfg.temperatureSensors.ceilingService, '', 180),\n        floorService: text(cfg.temperatureSensors && cfg.temperatureSensors.floorService, '', 180),\n        stratificationWarning: number(cfg.temperatureSensors && cfg.temperatureSensors.stratificationWarning, 4, 1, 10)\n    };",
-    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: ''\n    };"
+    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: 'com.victronenergy.temperature/25'\n    };"
   )
   .replace(
     "    cfg.temperatureSensors = {\n        ceilingService: text(cfg.temperatureSensors && cfg.temperatureSensors.ceilingService, '', 180),\n        floorService: text(cfg.temperatureSensors && cfg.temperatureSensors.floorService, '', 180)\n    };",
-    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: ''\n    };"
+    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: 'com.victronenergy.temperature/25'\n    };"
   )
   .replace(
     "    cfg.security.apiToken = text(cfg.security.apiToken, DEFAULTS.security.apiToken, 96);\n    cfg.security.allowReadWithoutToken = true;",
@@ -2870,7 +2943,7 @@ console.log(JSON.stringify({
   publicPath,
   nodes: flows.length,
   dashboardBytes: dashboard.length,
-  ruuvi: 'fixed native com.victronenergy.temperature/24 · no discovery',
+  ruuvi: 'fixed native /24 ceiling + /25 floor · no discovery',
   serviceStatus: '60 s / process mutex',
   shelly: 'com.victronenergy.acload/50 /SwitchableOutput/0/State',
   orion: 'native com.victronenergy.alternator/289 · /Mode (1/4)',
