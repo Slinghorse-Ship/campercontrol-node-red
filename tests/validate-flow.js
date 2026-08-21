@@ -14,17 +14,18 @@ const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const packagePath = path.join(root, 'package.json');
 const starlinkHelperPath = path.join(root, 'cerbo-service', 'starlink-read-status.sh');
 const deviceHttpHelperPath = path.join(root, 'cerbo-service', 'device-http-bounded.py');
+const normalizeNewlines = value => value.replace(/\r\n?/g, '\n');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
-const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
-const dashboardV2MarkupSource = fs.readFileSync(dashboardV2MarkupPath, 'utf8');
+const dashboardTemplate = normalizeNewlines(fs.readFileSync(dashboardPath, 'utf8'));
+const dashboardV2MarkupSource = normalizeNewlines(fs.readFileSync(dashboardV2MarkupPath, 'utf8'));
 const transitDark = fs.readFileSync(transitDarkPath);
 const transitLight = fs.readFileSync(transitLightPath);
 const dashboardV2Markup = dashboardV2MarkupSource
   .replace('__CC2_TRANSIT_DARK_DATA_URI__', `data:image/png;base64,${transitDark.toString('base64')}`)
   .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', `data:image/png;base64,${transitLight.toString('base64')}`)
   .trim();
-const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const dashboardV2Css = normalizeNewlines(fs.readFileSync(dashboardV2CssPath, 'utf8')).trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const starlinkHelperSource = fs.readFileSync(starlinkHelperPath, 'utf8');
@@ -510,6 +511,22 @@ check(targetsOf(dcSystemPowerInput.id).includes('d097a007d7fe4bbb')
   && get('d097a007d7fe4bbb').rules?.some(rule => rule.p === 'topic' && rule.to === 'dc.system.power')
   && snapshotFunction.includes("const dcSystemPower = sensor('dc.system.power');")
   && snapshotFunction.includes('        dcSystemPower,'), 'DC-SystemCalc-Wert wird additiv in den zentralen Snapshot übernommen');
+const sensorNormalizer = get('bb6668fefec83068').func || '';
+const normalizedDcValues = new Map();
+const normalizedDcFlow = {
+  get: key => normalizedDcValues.get(key),
+  set: (key, value) => normalizedDcValues.set(key, value)
+};
+const normalizedDcOutput = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', sensorNormalizer)(
+  { topic: 'dc.system.power', payload: 184, _camperSeen: 1234 }, normalizedDcFlow, {}, {}, {}, {}
+);
+check(normalizedDcOutput?.topic === 'tick'
+  && normalizedDcValues.get('camperSensors')?.['dc.system.power']?.value === 184
+  && normalizedDcValues.get('camperSensors')?.['dc.system.power']?.seen === 1234,
+  'DC-SystemCalc-Wert passiert den gemeinsamen Sensor-Normalisierer bis zum Snapshot-Gate');
+check(snapshotFunction.includes('const known = Number(state.seen || 0) > 0;')
+  && snapshotFunction.includes('online: known'),
+  'Changed-only STAR-Power-Zustände bleiben nach der ersten gültigen Rückmeldung bedienbar');
 check(nodesAt('com.victronenergy.tank/1', '/Remaining').length === 0, 'Nicht vorhandener Abwassertank wird nicht länger abgefragt');
 check(dashboardV2Markup.includes('{{signed(s.energy?.dcSystemPower)}} W') && dashboardV2Markup.includes('DC-Verbrauch'), 'Home zeigt den originalen DC-Systemwert statt Batterieladeleistung');
 check(!dashboardV2Markup.includes('{{signed(s.energy?.battery?.power)}} W'), 'Home verwechselt SmartShunt-Ladeleistung nicht mehr mit DC-Verbrauch');
@@ -984,6 +1001,19 @@ check(separatedEnergyFixture?.battery?.power === -52
   && separatedEnergyFixture?.dcSystemPower === 184, 'Fixture hält SmartShunt-Leistung und Victron-DC-Gesamtverbrauch getrennt');
 check(separatedEnergyFixture?.totalSolarPower === 318
   && separatedEnergyFixture?.indevolt?.solarPower === 777, 'Fixture schließt INDEVOLT aus Solar gesamt aus und veröffentlicht es weiterhin separat');
+const unchangedSwitchFixture = runStateAggregator({}, {
+  starpowerState: { channels: {
+    2: { state: 0, seen: energyFixtureNow - 10 * 60 * 1000 },
+    5: { state: 0, seen: energyFixtureNow - 10 * 60 * 1000 }
+  } }
+})?.ui?.quickAccess || [];
+const unchangedPump = unchangedSwitchFixture.find(item => item.id === 'switch:water_pump');
+const unchangedStarlink = unchangedSwitchFixture.find(item => item.id === 'switch:starlink');
+check(unchangedPump?.available === true && unchangedPump?.active === false
+  && unchangedPump?.command?.value === true
+  && unchangedStarlink?.available === true && unchangedStarlink?.active === false
+  && unchangedStarlink?.command?.value === 1,
+  'Unveränderte ausgeschaltete Wasserpumpe und Starlink bleiben lokal einschaltbar');
 
 // Dynamische Persistenzregression: Auch ein massiver identischer Burst darf
 // den großen Snapshot und die gebundenen UI-Ausgänge nur einmal markieren.

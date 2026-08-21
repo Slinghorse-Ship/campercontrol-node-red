@@ -12,15 +12,16 @@ const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 fs.mkdirSync(path.dirname(publicPath), { recursive: true });
 const tabId = 'b7be72c8b69bf30e';
 const dashboardId = 'dec0785f657dc7d1';
+const normalizeNewlines = value => value.replace(/\r\n?/g, '\n');
 
 let flows = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardTemplate = normalizeNewlines(fs.readFileSync(dashboardPath, 'utf8'));
 const transitDataUri = filePath => `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`;
 const injectTransitAssets = source => source
   .replace('__CC2_TRANSIT_DARK_DATA_URI__', transitDataUri(transitDarkPath))
   .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', transitDataUri(transitLightPath));
-const dashboardV2Markup = injectTransitAssets(fs.readFileSync(dashboardV2MarkupPath, 'utf8')).trim();
-const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const dashboardV2Markup = injectTransitAssets(normalizeNewlines(fs.readFileSync(dashboardV2MarkupPath, 'utf8'))).trim();
+const dashboardV2Css = normalizeNewlines(fs.readFileSync(dashboardV2CssPath, 'utf8')).trim();
 const composeDashboard = () => {
   const markupToken = '<!-- CAMPERCONTROL_V2_MARKUP -->';
   const cssToken = '/* CAMPERCONTROL_V2_CSS */';
@@ -1074,6 +1075,27 @@ if (!settings.func.includes('externalWifiTileEnabled')) {
 }
 const state = get('ada9353cc6ea4a4c');
 const climateAutomationController = get('ec5c5c0618d69359');
+const staleDcChannelAvailability = `const dcChannels = (cfg.switches || []).filter(item => item.visible !== false).map(item => {
+    const state = channel(item.channel);
+    return { id: item.id, name: item.name, channel: item.channel, on: Number(state.state) === 1, online: now - Number(state.seen || 0) <= staleMs };
+});`;
+const changedOnlyDcChannelAvailability = `const dcChannels = (cfg.switches || []).filter(item => item.visible !== false).map(item => {
+    const state = channel(item.channel);
+    // Victron switch inputs are changed-only. A known unchanged state remains
+    // authoritative and must not make local controls unavailable after 90 s.
+    const known = Number(state.seen || 0) > 0;
+    return { id: item.id, name: item.name, channel: item.channel, on: Number(state.state) === 1, online: known };
+});`;
+if (state.func.includes(staleDcChannelAvailability)) {
+  state.func = replaceOnce(
+    state.func,
+    staleDcChannelAvailability,
+    changedOnlyDcChannelAvailability,
+    'Changed-only STAR-Power-Verfügbarkeit'
+  );
+} else if (!state.func.includes(changedOnlyDcChannelAvailability)) {
+  throw new Error('STAR-Power-Verfügbarkeitsvertrag fehlt');
+}
 if (!state.func.includes('externalWifiTileEnabled')) {
   state.func = replaceOnce(
     state.func,
