@@ -200,7 +200,7 @@ if (own(source, 'tides') && source.tides != null) {
     const tideStation = object(tideSource) && object(tideSource.station) ? {
         id: required(tideSource.station, 'id', value => string(value, 64)),
         name: required(tideSource.station, 'name', value => string(value, 160)),
-        distanceKm: required(tideSource.station, 'distanceKm', value => number(value, 0, 60))
+        distanceKm: required(tideSource.station, 'distanceKm', value => number(value, 0, 20050))
     } : null;
     const tideEvent = item => object(item) ? {
         t: required(item, 't', timestamp),
@@ -247,6 +247,58 @@ flow.set('camperWeather', weather);
 node.status({ fill: weather.stale ? 'yellow' : 'green', shape: 'dot', text: hourly.length + ' h · ' + daily.length + ' d' });
 return { topic: 'weather', payload: weather };
 `
+});
+
+// The Cerbo service owns the location file. Node-RED mirrors the validated
+// value into its existing settings model and writes user changes back through
+// exactly one bounded D-Bus path.
+removeIds(['weather_location_settings_in', 'weather_location_settings_validate', 'weather_location_settings_out']);
+add({
+  id: 'weather_location_settings_in', type: 'victron-input-custom', z: tabId,
+  service: 'com.victronenergy.campercontrol/0', path: '/Settings/WeatherLocation',
+  serviceObj: { service: 'com.victronenergy.campercontrol/0', name: 'CamperControl bridge' },
+  pathObj: { path: '/Settings/WeatherLocation', type: 'string', name: '/Settings/WeatherLocation' },
+  name: 'Wetterstandorte · zentrale Cerbo-Einstellung', onlyChanges: true, roundValues: '3',
+  x: 255, y: 3460, wires: [['weather_location_settings_validate']]
+});
+add({
+  id: 'weather_location_settings_validate', type: 'function', z: tabId,
+  name: 'Wetterstandorte prüfen & Settings spiegeln', outputs: 1, timeout: 0, noerr: 0,
+  initialize: '', finalize: '', libs: [], x: 595, y: 3460,
+  wires: [['47003434a27acbe7']],
+  func: String.raw`
+const MAX_BYTES = 1024;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const unwrap = value => object(value) && Object.prototype.hasOwnProperty.call(value, 'value') ? value.value : value;
+let raw = unwrap(msg.payload);
+if (Buffer.isBuffer(raw)) raw = raw.toString('utf8');
+if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > MAX_BYTES) return null;
+let source;
+try { source = JSON.parse(raw); } catch (error) { return null; }
+const section = (name, pattern) => {
+    const value = object(source && source[name]) ? source[name] : null;
+    if (!value || !['gps', 'station'].includes(value.mode) || typeof value.stationId !== 'string') return null;
+    const stationId = value.stationId.trim();
+    if ((value.mode === 'gps' && stationId) || (value.mode === 'station' && !pattern.test(stationId))) return null;
+    return { mode: value.mode, stationId: name === 'weather' ? stationId.toUpperCase() : stationId };
+};
+const weather = section('weather', /^[A-Za-z0-9]{5}$/);
+const tide = section('tide', /^[a-z0-9][a-z0-9_-]{0,127}$/);
+if (!object(source) || source.schema !== 1 || !weather || !tide) return null;
+return {
+    topic: 'ui.settings',
+    _weatherLocationFromCerbo: true,
+    payload: { action: 'patch', patch: { weatherLocation: { schema: 1, weather, tide } } }
+};
+`
+});
+add({
+  id: 'weather_location_settings_out', type: 'victron-output-custom', z: tabId,
+  service: 'com.victronenergy.campercontrol/0', path: '/Settings/WeatherLocation',
+  serviceObj: { service: 'com.victronenergy.campercontrol/0', name: 'CamperControl bridge' },
+  pathObj: { path: '/Settings/WeatherLocation', type: 'string', name: '/Settings/WeatherLocation' },
+  initial: '', name: 'Wetterstandorte · validiert zum Cerbo', onlyChanges: true,
+  x: 1340, y: 3460, wires: []
 });
 
 // Ruuvi wird nicht gesucht. Der vorhandene Sensor FB31 ist fest und nativ dem
@@ -1186,6 +1238,11 @@ const cleanEmbeddedDefaults = source => source.replace(
       ? value.ui.quickAccessLightIds.map(id => id === 'high_beam' ? 'switch:high_beam_manual' : 'light:' + id)
       : null;
     value.version = 5;
+    value.weatherLocation = {
+      schema: 1,
+      weather: { mode: 'gps', stationId: '' },
+      tide: { mode: 'gps', stationId: '' }
+    };
     value.ui = {
       quickAccessIds: genericQuick || legacyQuick || genericQuickFallback,
       favoriteIds: genericFavorites || genericFavoriteFallback,
@@ -1302,6 +1359,28 @@ settings.func = cleanEmbeddedDefaults(settings.func)
     "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true), designVersion: cfg.ui && cfg.ui.designVersion === 'v1' ? 'v1' : 'v2' };",
     "    cfg.ui = { quickAccessIds, externalWifiTileEnabled: boolean(cfg.ui && cfg.ui.externalWifiTileEnabled, true) };"
   );
+
+if (!settings.func.includes('const locationSection = (name, pattern) =>')) {
+  settings.func = replaceOnce(
+    settings.func,
+    "    cfg.units = cfg.units === 'imperial' ? 'imperial' : 'metric';",
+    `    cfg.units = cfg.units === 'imperial' ? 'imperial' : 'metric';
+    const locationSource = object(source.weatherLocation) ? source.weatherLocation : {};
+    const locationSection = (name, pattern) => {
+        const value = object(locationSource[name]) ? locationSource[name] : null;
+        if (!value || !['gps', 'station'].includes(value.mode) || typeof value.stationId !== 'string') return null;
+        const stationId = value.stationId.trim();
+        if ((value.mode === 'gps' && stationId) || (value.mode === 'station' && !pattern.test(stationId))) return null;
+        return { mode: value.mode, stationId: name === 'weather' ? stationId.toUpperCase() : stationId };
+    };
+    const weatherLocationWeather = locationSection('weather', /^[A-Za-z0-9]{5}$/);
+    const weatherLocationTide = locationSection('tide', /^[a-z0-9][a-z0-9_-]{0,127}$/);
+    cfg.weatherLocation = locationSource.schema === 1 && weatherLocationWeather && weatherLocationTide
+        ? { schema: 1, weather: weatherLocationWeather, tide: weatherLocationTide }
+        : clone(DEFAULTS.weatherLocation);`,
+    'Getrennte validierte Wetter- und Tidestandorte'
+  );
+}
 
 if (!settings.func.includes('delete source.ui.designVersion;')) {
   settings.func = settings.func.replace(
@@ -1511,6 +1590,89 @@ if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climat
     'Klima-Betriebsart im Zustandssnapshot'
   );
 }
+
+if (!settings.func.includes('let weatherLocationWrite = false;')) {
+  settings.func = replaceOnce(
+    settings.func,
+    "let wsReply = null;",
+    "let wsReply = null;\nlet weatherLocationWrite = false;",
+    'Wetterstandort-Schreibstatus'
+  );
+  settings.func = replaceOnce(
+    settings.func,
+    `    if (action.action === 'patch' && object(action.patch)) {
+        networkChanged = object(action.patch.network);
+        cfg = sanitize(merge(cfg, action.patch));
+        changed = true;`,
+    `    if (action.action === 'patch' && object(action.patch)) {
+        networkChanged = object(action.patch.network);
+        const beforePatch = JSON.stringify(cfg);
+        cfg = sanitize(merge(cfg, action.patch));
+        changed = JSON.stringify(cfg) !== beforePatch;
+        weatherLocationWrite = changed && object(action.patch.weatherLocation) && msg._weatherLocationFromCerbo !== true;`,
+    'Settings-Patch schreibt Wetterstandorte changed-only'
+  );
+  settings.func = replaceOnce(
+    settings.func,
+    `        cfg = sanitize(action.backup.config);
+        changed = true;
+        networkChanged = true;
+        notice = 'Konfiguration wiederhergestellt.';`,
+    `        cfg = sanitize(action.backup.config);
+        changed = true;
+        networkChanged = true;
+        weatherLocationWrite = true;
+        notice = 'Konfiguration wiederhergestellt.';`,
+    'Restore synchronisiert Wetterstandorte'
+  );
+  settings.func = replaceOnce(
+    settings.func,
+    `        cfg = clone(DEFAULTS);
+        changed = true;
+        networkChanged = true;
+        notice = 'Camper-Einstellungen wurden zurückgesetzt.';`,
+    `        cfg = clone(DEFAULTS);
+        changed = true;
+        networkChanged = true;
+        weatherLocationWrite = true;
+        notice = 'Camper-Einstellungen wurden zurückgesetzt.';`,
+    'Reset synchronisiert Wetterstandorte'
+  );
+  settings.func = replaceOnce(
+    settings.func,
+    `if (changed) {
+    persist();
+}
+
+if (msg.req && action) return [dashboard(notice), http(200, { ok: true, config: publicConfig() }), { topic: 'tick' }, null];
+if (msg.topic === 'ws.settings') wsReply = websocket({ type: 'settings', ok: true, config: publicConfig() });
+return [dashboard(notice), null, { topic: 'tick' }, wsReply];`,
+    `if (changed) {
+    persist();
+}
+const weatherLocationMessage = weatherLocationWrite
+    ? { payload: JSON.stringify(cfg.weatherLocation) }
+    : null;
+
+if (msg.req && action) return [dashboard(notice), http(200, { ok: true, config: publicConfig() }), { topic: 'tick' }, null, weatherLocationMessage];
+if (msg.topic === 'ws.settings') wsReply = websocket({ type: 'settings', ok: true, config: publicConfig() });
+return [dashboard(notice), null, { topic: 'tick' }, wsReply, weatherLocationMessage];`,
+    'Validierter Wetterstandort-Ausgang'
+  );
+  settings.func = settings.func
+    .replace(
+      "return [dashboard(), http(200, { ok: true, config: publicConfig() }), null, null];",
+      "return [dashboard(), http(200, { ok: true, config: publicConfig() }), null, null, null];"
+    )
+    .replace(
+      "return [dashboard('Konfigurationssicherung erstellt.', { backup }), null, null, null];",
+      "return [dashboard('Konfigurationssicherung erstellt.', { backup }), null, null, null, null];"
+    );
+}
+settings.outputs = 5;
+settings.wires = Array.isArray(settings.wires) ? settings.wires.slice(0, 5) : [];
+while (settings.wires.length < 5) settings.wires.push([]);
+settings.wires[4] = ['weather_location_settings_out'];
 
 const defaultMatch = settings.func.match(/const DEFAULTS = (\{"version":5[^\n]*\});/);
 if (!defaultMatch) throw new Error('Bereinigte v5-Defaults nicht gefunden');
@@ -1903,6 +2065,10 @@ state.func = state.func.replace(
 state.func = state.func.replace(
   "ui: { quickAccessIds, quickAccess, quickAccessOptions, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
   "ui: { quickAccessIds, quickAccess, quickAccessOptions, favoriteIds, favorites, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
+);
+state.func = state.func.replace(
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, favoriteIds, favorites, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },",
+  "ui: { quickAccessIds, quickAccess, quickAccessOptions, favoriteIds, favorites, weatherLocation: cfg.weatherLocation, externalWifiTileEnabled: !(cfg.ui && cfg.ui.externalWifiTileEnabled === false) },"
 );
 
 if (!state.func.includes("const weatherStored = flow.get('camperWeather');")) {

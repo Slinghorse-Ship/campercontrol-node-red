@@ -199,6 +199,15 @@ class CamperControlDbusContractTest(unittest.TestCase):
         bridge = MODULE.CamperControlBridge(object(), FakeService)
         self.assertFalse(bridge._service.path_options["/State/Weather"].get("writeable", False))
         self.assertTrue(bridge._service.path_options["/Command"].get("writeable", False))
+        self.assertTrue(bridge._service.path_options["/Settings/WeatherLocation"].get("writeable", False))
+        self.assertEqual(
+            json.loads(bridge._service.values["/Settings/WeatherLocation"]),
+            {
+                "schema": 1,
+                "weather": {"mode": "gps", "stationId": ""},
+                "tide": {"mode": "gps", "stationId": ""},
+            },
+        )
         payload = {"schema": 1, "hourly": [], "daily": [], "stale": False}
         bridge._apply_weather(payload)
         bridge._apply_weather(payload)
@@ -218,6 +227,29 @@ class CamperControlDbusContractTest(unittest.TestCase):
         heartbeat_writes = [value for path, value in bridge._service.assignments if path == "/Status/LastUpdate"]
         self.assertEqual(len(fragment_writes), len(MODULE.STATE_SECTIONS))
         self.assertEqual(heartbeat_writes, [1000, 1060])
+
+    def test_weather_location_write_is_validated_centrally_and_wakes_provider(self):
+        bridge = MODULE.CamperControlBridge.__new__(MODULE.CamperControlBridge)
+        bridge._weather = mock.Mock()
+        bridge._weather_wakeup = MODULE.threading.Event()
+        bridge._service = {}
+        raw = json.dumps(
+            {
+                "schema": 1,
+                "weather": {"mode": "station", "stationId": "10641"},
+                "tide": {"mode": "gps", "stationId": ""},
+            }
+        )
+        self.assertTrue(bridge._accept_weather_location("/Settings/WeatherLocation", raw))
+        bridge._weather.update_location_config.assert_called_once_with(raw)
+        self.assertTrue(bridge._weather_wakeup.is_set())
+        self.assertEqual(bridge._service["/Status/WeatherLocationError"], "")
+
+        bridge._weather_wakeup.clear()
+        bridge._weather.update_location_config.side_effect = ValueError("invalid")
+        self.assertFalse(bridge._accept_weather_location("/Settings/WeatherLocation", "{}"))
+        self.assertFalse(bridge._weather_wakeup.is_set())
+        self.assertEqual(bridge._service["/Status/WeatherLocationError"], "invalid")
 
     def test_compact_state_preserves_ui_sections_and_removes_volatile_values(self):
         state = {

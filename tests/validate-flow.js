@@ -171,7 +171,7 @@ check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.n
 check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
-check(flows.length === 358, 'Master bleibt exakt der validierte 358-Node-Flow');
+check(flows.length === 361, 'Master bleibt exakt der validierte 361-Node-Flow');
 check(packageJson.version === '4.5.0', 'Releaseversion ist 4.5.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
@@ -194,7 +194,7 @@ for (const id of ['switch:water_pump', 'switch:starlink', 'switch:dc_outlets_lef
 for (const target of ['device:inverter', 'device:orion', 'device:indevolt_grid', 'device:heater', 'device:maxxfan']) {
   check(snapshotFunction.includes(target), `Schnellzugriff-Katalog enthält ${target}`);
 }
-check(snapshotFunction.includes('quickAccessOptions, favoriteIds, favorites, externalWifiTileEnabled'), 'Snapshot veröffentlicht getrennte Auswahl und aufgelöste Favoriten über den gemeinsamen Katalog');
+check(snapshotFunction.includes('quickAccessOptions, favoriteIds, favorites, weatherLocation: cfg.weatherLocation, externalWifiTileEnabled'), 'Snapshot veröffentlicht Favoriten und zentrale Wetterstandorte über den gemeinsamen Katalog');
 check(snapshotFunction.includes('const resolveQuickOption = id =>') && snapshotFunction.includes('quickAccessIds.map(resolveQuickOption)') && snapshotFunction.includes('favoriteIds.map(resolveQuickOption)'), 'Schnellzugriff und Favoriten teilen genau einen sicheren Action-Resolver');
 check(!snapshotFunction.includes('designVersion:'), 'Snapshot veröffentlicht keine veraltete Designauswahl');
 check(snapshotFunction.includes("target: 'waterPump', action: 'set'"), 'Wasserpumpen-Schnellzugriff nutzt den validierten Router');
@@ -273,6 +273,35 @@ check(weatherValidator.func.includes('const MAX_BYTES = 16 * 1024') && weatherVa
 check(weatherValidator.func.includes("flow.get('camperWeather')") && weatherValidator.func.includes('if (previousJson === canonical) return null'), 'Wettertransport ist changed-only und erzeugt keinen Feedback-Loop');
 check(!/\b(?:setTimeout|setInterval|fetch|XMLHttpRequest)\b/.test(weatherValidator.func), 'Wettervalidator besitzt weder Timer noch HTTP-Transport');
 check(snapshotFunction.includes("const weatherStored = flow.get('camperWeather');") && snapshotFunction.includes('    weather,'), 'Snapshot veröffentlicht das validierte Wetter zentral für Ford und Dashboard');
+const weatherLocationInput = get('weather_location_settings_in');
+const weatherLocationValidator = get('weather_location_settings_validate');
+const weatherLocationOutput = get('weather_location_settings_out');
+check(weatherLocationInput.type === 'victron-input-custom'
+  && weatherLocationInput.service === 'com.victronenergy.campercontrol/0'
+  && weatherLocationInput.path === '/Settings/WeatherLocation'
+  && weatherLocationInput.onlyChanges === true
+  && JSON.stringify(weatherLocationInput.wires) === JSON.stringify([['weather_location_settings_validate']]), 'Node-RED liest Wetterstandorte changed-only vom zentralen Cerbo-Pfad');
+check(weatherLocationValidator.type === 'function'
+  && weatherLocationValidator.func.includes('const MAX_BYTES = 1024')
+  && weatherLocationValidator.func.includes("_weatherLocationFromCerbo: true")
+  && JSON.stringify(weatherLocationValidator.wires) === JSON.stringify([['47003434a27acbe7']]), 'Cerbo-Wetterstandorte werden begrenzt validiert in den vorhandenen Settings-Patch gespiegelt');
+check(weatherLocationOutput.type === 'victron-output-custom'
+  && weatherLocationOutput.service === 'com.victronenergy.campercontrol/0'
+  && weatherLocationOutput.path === '/Settings/WeatherLocation'
+  && weatherLocationOutput.onlyChanges === true, 'Settings schreiben ausschließlich den validierten zentralen Wetterstandort-Pfad');
+check(get('47003434a27acbe7').outputs === 5
+  && JSON.stringify(get('47003434a27acbe7').wires?.[4]) === JSON.stringify(['weather_location_settings_out']), 'Vorhandener Settings-Patch besitzt genau einen Wetterstandort-Ausgang zum Cerbo');
+const runWeatherLocationValidator = payload => new Function('msg', 'flow', 'context', 'node', 'env', 'RED', weatherLocationValidator.func)(
+  { payload }, {}, {}, {}, {}, {}
+);
+const validWeatherLocation = { schema: 1, weather: { mode: 'station', stationId: 'a1234' }, tide: { mode: 'station', stationId: 'wilhelmshaven_alter_vorhafen' } };
+const mirroredWeatherLocation = runWeatherLocationValidator({ value: JSON.stringify(validWeatherLocation) });
+check(mirroredWeatherLocation?._weatherLocationFromCerbo === true
+  && mirroredWeatherLocation?.payload?.patch?.weatherLocation?.weather?.stationId === 'A1234'
+  && mirroredWeatherLocation?.payload?.patch?.weatherLocation?.tide?.stationId === 'wilhelmshaven_alter_vorhafen', 'Zentrale Standortauswahl normalisiert DWD-ID und hält Tide getrennt');
+check(runWeatherLocationValidator(JSON.stringify({ ...validWeatherLocation, tide: { mode: 'station', stationId: 'Baltic Gauge' } })) === null
+  && runWeatherLocationValidator(JSON.stringify({ ...validWeatherLocation, weather: { mode: 'automatic', stationId: '' } })) === null
+  && runWeatherLocationValidator('x'.repeat(1025)) === null, 'Ungültige Modi, Stations-IDs und übergroße Standortwerte erreichen den Settings-Patch nicht');
 const weatherStore = new Map();
 const weatherFlow = { get: key => weatherStore.get(key), set: (key, value) => weatherStore.set(key, value) };
 const weatherNode = { status() {} };
@@ -322,9 +351,11 @@ const unsortedTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:0
 check(runWeatherValidator(JSON.stringify(unsortedTideCurve))?.payload?.tides === undefined, 'Nicht chronologische Tidepunkte werden verworfen');
 const nullTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:06Z', tides: { ...weatherFixture.tides, curve: weatherFixture.tides.curve.map((point, index) => index === 1 ? { ...point, heightM: null } : point) } };
 check(runWeatherValidator(JSON.stringify(nullTideCurve))?.payload?.tides === undefined, 'Tidekurven erfinden für fehlende Höhen keinen Nullpegel');
-const invalidTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 61 } } };
+const farInlandTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:07Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 642.2 } } };
+check(runWeatherValidator(JSON.stringify(farInlandTides))?.payload?.tides?.station?.distanceKm === 642.2, 'Gültige Nordsee-Fallback-Tide bleibt auch deutlich jenseits des 60-km-Suchradius sichtbar');
+const invalidTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:08Z', tides: { ...weatherFixture.tides, station: { ...weatherFixture.tides.station, distanceKm: 20051 } } };
 const acceptedWithoutInvalidTides = runWeatherValidator(JSON.stringify(invalidTides));
-check(acceptedWithoutInvalidTides?.payload?.schema === 1 && acceptedWithoutInvalidTides.payload.tides === undefined, 'Ungültige oder zu weit entfernte Tide wird fail-closed entfernt, ohne DWD-Wetter zu blockieren');
+check(acceptedWithoutInvalidTides?.payload?.schema === 1 && acceptedWithoutInvalidTides.payload.tides === undefined, 'Physikalisch unmögliche Tideentfernung wird entfernt, ohne DWD-Wetter zu blockieren');
 check(runWeatherValidator(JSON.stringify(weatherFixture))?.payload?.tides?.station?.id === 'cuxhaven_steubenhoeft', 'Nach einer ungültigen Tide kann der nächste gültige BSH-Zustand wieder übernommen werden');
 const retainedWeather = JSON.stringify(weatherStore.get('camperWeather'));
 check(runWeatherValidator(JSON.stringify({ ...weatherFixture, schema: 2 })) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültiges Wetterschema ersetzt den letzten gültigen Cache nicht');
@@ -510,6 +541,11 @@ check(JSON.stringify(migratedConfig.ui?.favoriteIds) === JSON.stringify([
   'switch:water_pump', 'device:inverter', 'device:heater', 'device:maxxfan'
 ]), 'Fehlende Favoriten erhalten den eigenen sicheren Standard statt einer Schnellzugriff-Kopie');
 check(JSON.stringify(migratedConfig.ui?.favoriteIds) !== JSON.stringify(migratedConfig.ui?.quickAccessIds), 'Migration hält Favoriten und Home-Schnellzugriff sichtbar getrennt');
+check(JSON.stringify(migratedConfig.weatherLocation) === JSON.stringify({
+  schema: 1,
+  weather: { mode: 'gps', stationId: '' },
+  tide: { mode: 'gps', stationId: '' }
+}), 'Migration ergänzt getrennte Wetter-/Tidestandorte im GPS-Standard');
 
 const designFile = new Map([['camperConfig', migratedConfig]]);
 const designFlow = {
@@ -519,6 +555,37 @@ const designFlow = {
 const designOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { designVersion: 'v1' } } } }, designFlow, {}, {}, {}, {});
 check(designOutput?.[0]?.payload?.config?.ui?.designVersion === undefined, 'Settings-Patch kann V1 nicht wieder aktivieren');
 check(designFile.get('camperConfig')?.ui?.designVersion === undefined, 'V1-Auswahl wird nicht persistent gespeichert');
+
+const locationPatch = {
+  schema: 1,
+  weather: { mode: 'station', stationId: '10866' },
+  tide: { mode: 'station', stationId: 'wilhelmshaven_alter_vorhafen' }
+};
+const locationPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { weatherLocation: locationPatch } } }, designFlow, {}, {}, {}, {});
+check(JSON.stringify(locationPatchOutput?.[0]?.payload?.config?.weatherLocation) === JSON.stringify(locationPatch), 'Settings-Patch speichert Wetter und Tide unabhängig');
+check(JSON.parse(locationPatchOutput?.[4]?.payload || '{}')?.tide?.stationId === 'wilhelmshaven_alter_vorhafen', 'Nur ein validierter kanonischer Standortwert wird zum Cerbo ausgegeben');
+
+const centralLocationStore = new Map([['camperConfig', JSON.parse(JSON.stringify(locationPatchOutput?.[0]?.payload?.config))]]);
+const centralLocationWrites = [];
+const centralLocationFlow = {
+  get: key => centralLocationStore.get(key),
+  set: (key, value) => { centralLocationStore.set(key, value); centralLocationWrites.push(key); }
+};
+const centralEchoOutput = runSettings({
+  topic: 'ui.settings',
+  _weatherLocationFromCerbo: true,
+  payload: { action: 'patch', patch: { weatherLocation: locationPatch } }
+}, centralLocationFlow, {}, {}, {}, {});
+check(centralEchoOutput?.[4] == null && centralLocationWrites.length === 0, 'Cerbo-Echo erzeugt weder Rückschreibschleife noch unnötigen persistenten Write');
+
+const invalidLocationPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: {
+  weatherLocation: { schema: 1, weather: { mode: 'station', stationId: '../x' }, tide: { mode: 'station', stationId: 'Baltic Gauge' } }
+} } }, designFlow, {}, {}, {}, {});
+check(JSON.stringify(invalidLocationPatchOutput?.[0]?.payload?.config?.weatherLocation) === JSON.stringify({
+  schema: 1,
+  weather: { mode: 'gps', stationId: '' },
+  tide: { mode: 'gps', stationId: '' }
+}), 'Ungültiger Standort-Patch fällt vollständig auf den sicheren GPS-Standard zurück');
 
 const favoritePatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { ui: { favoriteIds: ['device:heater', 'device:heater', 'invalid', 'switch:water_pump', 'device:maxxfan', 'device:inverter'] } } } }, designFlow, {}, {}, {}, {});
 const favoritePatchedConfig = favoritePatchOutput?.[0]?.payload?.config || {};

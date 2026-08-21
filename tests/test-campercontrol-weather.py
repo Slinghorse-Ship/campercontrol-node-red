@@ -39,6 +39,41 @@ def bsh_hits(count: int) -> bytes:
     ).encode()
 
 
+def bsh_station(
+    station_id: str,
+    name: str = "Nordsee Testpegel",
+    latitude: float = 53.5,
+    longitude: float = 8.1,
+    region: str = "north_sea",
+) -> bytes:
+    value = json.loads(BSH_STATION)
+    value["id"] = station_id
+    value["geometry"] = {"type": "Point", "coordinates": [longitude, latitude]}
+    value["properties"]["gauge_label"] = name
+    value["properties"]["region"] = region
+    return json.dumps(value).encode()
+
+
+def write_location_config(
+    path: pathlib.Path,
+    *,
+    weather_mode: str = "gps",
+    weather_station_id: str = "",
+    tide_mode: str = "gps",
+    tide_station_id: str = "",
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "weather": {"mode": weather_mode, "stationId": weather_station_id},
+                "tide": {"mode": tide_mode, "stationId": tide_station_id},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 CATALOG = """ID    ICAO NAME                 LAT    LON     ELEV
 ----- ---- -------------------- -----  ------- -----
 10641 ---- OFFENBACH-WETTERPARK  50.06    8.48   119
@@ -158,6 +193,73 @@ class CamperControlWeatherTest(unittest.TestCase):
             self.assertEqual(MODULE.read_gx_position(), (51.2345, 7.1234))
             self.assertEqual(MODULE.read_gx_timezone(), "UTC")
 
+    def test_location_config_is_bounded_validated_and_legacy_weather_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            location = base / "weather-location.json"
+            legacy = base / "weather-station.conf"
+            provider = MODULE.WeatherProvider(
+                station_config_path=legacy,
+                location_config_path=location,
+            )
+
+            legacy.write_text("10641\n", encoding="ascii")
+            self.assertEqual(
+                provider._location_config(),
+                {
+                    "schema": 1,
+                    "weather": {"mode": "station", "stationId": "10641"},
+                    "tide": {"mode": "gps", "stationId": ""},
+                },
+            )
+
+            write_location_config(
+                location,
+                weather_mode="station",
+                weather_station_id="a1234",
+                tide_mode="station",
+                tide_station_id="wilhelmshaven_alter_vorhafen",
+            )
+            self.assertEqual(provider._location_config()["weather"]["stationId"], "A1234")
+            self.assertEqual(
+                provider._location_config()["tide"]["stationId"],
+                "wilhelmshaven_alter_vorhafen",
+            )
+
+            invalid = [
+                {"schema": 2, "weather": {"mode": "gps", "stationId": ""}, "tide": {"mode": "gps", "stationId": ""}},
+                {"schema": 1, "weather": {"mode": "automatic", "stationId": ""}, "tide": {"mode": "gps", "stationId": ""}},
+                {"schema": 1, "weather": {"mode": "station", "stationId": "../x"}, "tide": {"mode": "gps", "stationId": ""}},
+                {"schema": 1, "weather": {"mode": "gps", "stationId": ""}, "tide": {"mode": "station", "stationId": "Baltic Gauge"}},
+                {"schema": 1, "weather": {"mode": "gps", "stationId": "10641"}, "tide": {"mode": "gps", "stationId": ""}},
+            ]
+            for value in invalid:
+                location.write_text(json.dumps(value), encoding="utf-8")
+                self.assertEqual(provider._location_config(), MODULE.default_location_config())
+
+            location.write_bytes(b" " * (MODULE.MAX_LOCATION_CONFIG_BYTES + 1))
+            self.assertEqual(provider._location_config(), MODULE.default_location_config())
+            # An invalid existing JSON file must not revive the legacy override.
+            self.assertEqual(provider._manual_station_id(), "")
+
+            valid_raw = json.dumps(
+                {
+                    "schema": 1,
+                    "weather": {"mode": "station", "stationId": "10641"},
+                    "tide": {"mode": "gps", "stationId": ""},
+                }
+            )
+            updated = provider.update_location_config(valid_raw)
+            self.assertEqual(updated["weather"]["stationId"], "10641")
+            self.assertEqual(json.loads(location.read_text(encoding="utf-8")), updated)
+            with mock.patch.object(MODULE, "save_json") as save:
+                provider.update_location_config(valid_raw)
+            save.assert_not_called()
+            previous = location.read_bytes()
+            with self.assertRaises(ValueError):
+                provider.update_location_config('{"schema":1,"weather":{}}')
+            self.assertEqual(location.read_bytes(), previous)
+
     def test_station_catalog_converts_dwd_degree_minute_coordinates(self):
         stations = MODULE.parse_station_catalog(CATALOG)
         self.assertEqual([item.station_id for item in stations], ["10641", "10866"])
@@ -215,6 +317,14 @@ class CamperControlWeatherTest(unittest.TestCase):
             MODULE.parse_tide_station(json.dumps(value).encode(), "northsea_test_gauge", now)
         value = json.loads(BSH_STATION)
         value["properties"]["licence"] = "unknown"
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(json.dumps(value).encode(), "northsea_test_gauge", now)
+        value = json.loads(BSH_STATION)
+        value["type"] = "FeatureCollection"
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(json.dumps(value).encode(), "northsea_test_gauge", now)
+        value = json.loads(BSH_STATION)
+        value["geometry"]["type"] = "LineString"
         with self.assertRaises(ValueError):
             MODULE.parse_tide_station(json.dumps(value).encode(), "northsea_test_gauge", now)
 
@@ -449,6 +559,93 @@ class CamperControlWeatherTest(unittest.TestCase):
             self.assertLess(len(tide_cache.encode("utf-8")), MODULE.MAX_TIDE_CACHE_BYTES)
             self.assertEqual(provider.cached()["stale"], False)
 
+    def test_fixed_dwd_weather_station_is_independent_from_fixed_tide_station(self):
+        now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            location = base / "weather-location.json"
+            write_location_config(
+                location,
+                weather_mode="station",
+                weather_station_id="10866",
+                tide_mode="station",
+                tide_station_id=MODULE.DEFAULT_TIDE_STATION_ID,
+            )
+            downloads = []
+            tide_calls = []
+
+            def download(url, _maximum):
+                downloads.append(url)
+                return (
+                    CATALOG.encode("latin-1")
+                    if "stationskatalog" in url or "mosmix_stations.cfg" in url
+                    else sample_kmz()
+                )
+
+            def tide_http(url, _maximum, _etag=None):
+                tide_calls.append(url)
+                return MODULE.HttpResult(
+                    200,
+                    bsh_station(MODULE.DEFAULT_TIDE_STATION_ID, "Wilhelmshaven Alter Vorhafen"),
+                    None,
+                )
+
+            provider = MODULE.WeatherProvider(
+                cache_path=base / "weather.json",
+                catalog_path=base / "stations.cfg",
+                location_config_path=location,
+                tide_cache_path=base / "tides.json",
+                download=download,
+                tide_http=tide_http,
+                position_reader=lambda: (50.1, 8.8),
+                timezone_reader=lambda: "Europe/Berlin",
+                now=lambda: now,
+            )
+            snapshot = provider.refresh()
+            self.assertEqual(snapshot["station"]["id"], "10866")
+            self.assertTrue(any("LATEST_10866" in url for url in downloads))
+            self.assertEqual(snapshot["tides"]["station"]["id"], MODULE.DEFAULT_TIDE_STATION_ID)
+            self.assertEqual(tide_calls, [MODULE.tide_station_url(MODULE.DEFAULT_TIDE_STATION_ID)])
+
+    def test_fixed_bsh_tide_station_is_independent_from_gps_weather_station(self):
+        now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            location = base / "weather-location.json"
+            write_location_config(
+                location,
+                tide_mode="station",
+                tide_station_id="northsea_test_gauge",
+            )
+            tide_calls = []
+
+            def download(url, _maximum):
+                return (
+                    CATALOG.encode("latin-1")
+                    if "stationskatalog" in url or "mosmix_stations.cfg" in url
+                    else sample_kmz()
+                )
+
+            def tide_http(url, _maximum, _etag=None):
+                tide_calls.append(url)
+                return MODULE.HttpResult(200, BSH_STATION, None)
+
+            provider = MODULE.WeatherProvider(
+                cache_path=base / "weather.json",
+                catalog_path=base / "stations.cfg",
+                location_config_path=location,
+                tide_cache_path=base / "tides.json",
+                download=download,
+                tide_http=tide_http,
+                position_reader=lambda: (50.1, 8.8),
+                timezone_reader=lambda: "Europe/Berlin",
+                now=lambda: now,
+            )
+            snapshot = provider.refresh()
+            self.assertEqual(snapshot["station"]["id"], "10641")
+            self.assertEqual(snapshot["tides"]["station"]["id"], "northsea_test_gauge")
+            self.assertEqual(tide_calls, [MODULE.tide_station_url("northsea_test_gauge")])
+
     def test_stale_station_catalog_is_refreshed_but_survives_network_failure(self):
         now = dt.datetime(2026, 8, 19, 0, tzinfo=dt.timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
@@ -495,7 +692,7 @@ class CamperControlWeatherTest(unittest.TestCase):
             self.assertEqual(cached["daily"], [])
             self.assertIsNone(cached["sun"]["riseUtc"])
 
-    def test_tides_are_hidden_far_inland_without_downloading_station_file(self):
+    def test_gps_far_inland_uses_wilhelmshaven_fallback_and_remains_visible(self):
         now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
@@ -503,25 +700,68 @@ class CamperControlWeatherTest(unittest.TestCase):
 
             def tide_http(url, _maximum, _etag=None):
                 calls.append(url)
-                return MODULE.HttpResult(200, bsh_hits(0), None)
+                if "result-type=hitsOnly" in url:
+                    return MODULE.HttpResult(200, bsh_hits(0), None)
+                return MODULE.HttpResult(
+                    200,
+                    bsh_station(
+                        MODULE.DEFAULT_TIDE_STATION_ID,
+                        "Wilhelmshaven Alter Vorhafen",
+                        53.5133,
+                        8.145,
+                    ),
+                    '"wilhelmshaven"',
+                )
 
             provider = MODULE.WeatherProvider(
                 cache_path=base / "weather.json",
                 catalog_path=base / "stations.cfg",
                 station_config_path=base / "manual.conf",
+                location_config_path=base / "weather-location.json",
                 tide_cache_path=base / "tides.json",
                 tide_http=tide_http,
                 now=lambda: now,
             )
-            self.assertIsNone(provider._tides_for_position((48.14, 11.58)))
-            self.assertEqual(len(calls), len(MODULE.TIDE_DISCOVERY_RADII_KM))
-            self.assertTrue(all("result-type=hitsOnly" in url for url in calls))
+            tides = provider._tides_for_position((48.14, 11.58))
+            self.assertEqual(tides["station"]["id"], MODULE.DEFAULT_TIDE_STATION_ID)
+            self.assertGreater(tides["station"]["distanceKm"], MODULE.TIDE_MAX_DISTANCE_KM)
+            self.assertEqual(len(calls), len(MODULE.TIDE_DISCOVERY_RADII_KM) + 1)
+            self.assertTrue(all("result-type=hitsOnly" in url for url in calls[:-1]))
+            self.assertEqual(calls[-1], MODULE.tide_station_url(MODULE.DEFAULT_TIDE_STATION_ID))
+
+    def test_no_gps_loads_wilhelmshaven_fallback_directly(self):
+        now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            calls = []
+
+            def tide_http(url, _maximum, _etag=None):
+                calls.append(url)
+                return MODULE.HttpResult(
+                    200,
+                    bsh_station(
+                        MODULE.DEFAULT_TIDE_STATION_ID,
+                        "Wilhelmshaven Alter Vorhafen",
+                    ),
+                    None,
+                )
+
+            provider = MODULE.WeatherProvider(
+                location_config_path=base / "weather-location.json",
+                tide_cache_path=base / "tides.json",
+                tide_http=tide_http,
+                now=lambda: now,
+            )
+            tides = provider._tides_for_position(None)
+            self.assertEqual(tides["station"]["id"], MODULE.DEFAULT_TIDE_STATION_ID)
+            self.assertEqual(tides["station"]["distanceKm"], 0.0)
+            self.assertEqual(calls, [MODULE.tide_station_url(MODULE.DEFAULT_TIDE_STATION_ID)])
 
     def test_tide_cache_marks_stale_then_fails_closed_and_never_contains_gps(self):
         fetched = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
         value = {
             "schema": 1,
-            "station": {"id": "northsea_test_gauge", "name": "Nordsee Testpegel", "distanceKm": 4.2},
+            "station": {"id": "northsea_test_gauge", "name": "Nordsee Testpegel", "distanceKm": 642.2},
             "updatedUtc": MODULE.iso_utc(fetched),
             "referenceLevel": "PNP",
             "events": [
@@ -539,6 +779,7 @@ class CamperControlWeatherTest(unittest.TestCase):
         self.assertTrue(stale["stale"])
         self.assertEqual(stale["source"], "BSH")
         self.assertEqual(stale["referenceLevel"], "PNP")
+        self.assertEqual(stale["station"]["distanceKm"], 642.2)
         self.assertNotIn("latitude", json.dumps(stale))
         self.assertNotIn("longitude", json.dumps(stale))
         self.assertIsNone(MODULE._valid_tide_cache(value, fetched + dt.timedelta(days=8)))
@@ -564,6 +805,11 @@ class CamperControlWeatherTest(unittest.TestCase):
                 ],
             }
             MODULE.save_json(base / "tides.json", cache)
+            write_location_config(
+                base / "weather-location.json",
+                tide_mode="station",
+                tide_station_id="northsea_test_gauge",
+            )
             calls = []
 
             def offline(url, _maximum):
@@ -574,16 +820,72 @@ class CamperControlWeatherTest(unittest.TestCase):
                 cache_path=base / "weather.json",
                 catalog_path=base / "stations.cfg",
                 station_config_path=base / "manual.conf",
+                location_config_path=base / "weather-location.json",
                 tide_cache_path=base / "tides.json",
                 download=offline,
                 now=lambda: clock["now"],
             )
-            first = provider._tides_for_position((53.5, 8.1))
+            first = provider._tides_for_position(None)
             clock["now"] += dt.timedelta(hours=1)
-            second = provider._tides_for_position((53.5, 8.1))
+            second = provider._tides_for_position(None)
             self.assertEqual(len(calls), 1)
             self.assertEqual(first["station"]["id"], "northsea_test_gauge")
             self.assertEqual(second["station"]["id"], "northsea_test_gauge")
+
+    def test_fixed_tide_never_uses_cache_from_another_station(self):
+        now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            MODULE.save_json(
+                base / "weather.json",
+                {
+                    "fetchedAtUtc": "2026-08-20T09:00:00Z",
+                    "timezone": "Europe/Berlin",
+                    "sun": {"date": "2026-08-20", "riseUtc": None, "setUtc": None, "origin": "calculated"},
+                    "hourly": [],
+                    "daily": [],
+                },
+            )
+            MODULE.save_json(
+                base / "tides.json",
+                {
+                    "schema": 1,
+                    "station": {
+                        "id": "another_northsea_gauge",
+                        "name": "Anderer Nordseepegel",
+                        "latitude": 53.8,
+                        "longitude": 8.7,
+                        "distanceKm": 12.0,
+                    },
+                    "updatedUtc": "2026-08-20T09:00:00Z",
+                    "referenceLevel": "PNP",
+                    "events": [
+                        {"t": "2026-08-20T12:30:00Z", "type": "HW", "heightM": 7.31},
+                        {"t": "2026-08-20T18:45:00Z", "type": "NW", "heightM": 4.68},
+                    ],
+                },
+            )
+            write_location_config(
+                base / "weather-location.json",
+                tide_mode="station",
+                tide_station_id="wanted_northsea_gauge",
+            )
+            calls = []
+
+            def offline(url, _maximum, _etag=None):
+                calls.append(url)
+                raise OSError("offline")
+
+            provider = MODULE.WeatherProvider(
+                cache_path=base / "weather.json",
+                location_config_path=base / "weather-location.json",
+                tide_cache_path=base / "tides.json",
+                tide_http=offline,
+                now=lambda: now,
+            )
+            self.assertNotIn("tides", provider.cached())
+            self.assertIsNone(provider._tides_for_position(None))
+            self.assertEqual(calls, [MODULE.tide_station_url("wanted_northsea_gauge")])
 
     def test_matching_etag_304_refreshes_atomic_cache_without_payload_download(self):
         now = dt.datetime(2026, 8, 20, 10, tzinfo=dt.timezone.utc)
