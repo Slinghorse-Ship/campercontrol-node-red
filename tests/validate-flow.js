@@ -260,7 +260,19 @@ check(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\b/.test(dashboardScript
 check(!/\b(?:Chart|Highcharts|Plotly|ECharts)\b/.test(dashboard), 'Wetterchart benötigt keine externe Chart-Bibliothek');
 check(dashboard.includes('this.s.weather') && dashboard.includes('hourly.slice(0,24)') && dashboard.includes('daily.slice(0,6)'), 'Wetterpanel liest genau 24 Stunden und sechs Tage aus state.weather');
 check(dashboardV2Markup.includes('<polyline v-if="v2WeatherTempPoints"') && dashboardV2Markup.includes('v-for="bar in v2WeatherRainBars"'), 'Wetterchart zeigt Temperaturkurve und Niederschlagswahrscheinlichkeit nativ als SVG');
-check(dashboardV2Markup.includes('Deutscher Wetterdienst (DWD)'), 'Wetterpanel zeigt die DWD-Attribution');
+check(dashboardV2Markup.includes('Quelle: Deutscher Wetterdienst'), 'Wetterpanel zeigt die DWD-Attribution');
+check(dashboardV2Markup.includes('cc2-weather-current')
+  && dashboardV2Markup.includes('cc2-weather-chart-card')
+  && dashboardV2Markup.includes('cc2-weather-forecast')
+  && dashboardV2Markup.includes('Nächste 24 Stunden')
+  && dashboardV2Markup.includes('6-Tage-Vorschau'), 'Node-RED verwendet dieselben drei Wetterbereiche wie die GX/WASM-Referenz');
+check(dashboardV2Css.includes('.cc2-weather-content { position: absolute; left: 16px; top: 64px;')
+  && dashboardV2Css.includes('.cc2-weather-current { left: 0; top: 0; width: 170px; height: 174px; }')
+  && dashboardV2Css.includes('.cc2-weather-chart-card { left: 180px; top: 0;')
+  && dashboardV2Css.includes('.cc2-weather-forecast { left: 0; top: 184px; width: 100%; height: 174px; }'), 'Wetterkarten übernehmen das feste 170/348/528-Pixel-Raster der GX/WASM-Referenz');
+check(dashboardV2Markup.includes('cc2-weather-title-icon')
+  && dashboardV2Markup.includes('<use href="#cc2-climate"></use>')
+  && dashboardV2Css.includes('.cc2-weather-title-icon { position: absolute; left: 17px; top: 14px; width: 27px; height: 27px;'), 'Wetterkopf verwendet Geometrie und blaues Klima-Icon der GX/WASM-Referenz');
 check(dashboardV2Markup.includes('@change="v2SetLocation(\'weather\',$event.target.value)"')
   && dashboardV2Markup.includes('@change="v2SetLocation(\'tide\',$event.target.value)"')
   && dashboardV2Markup.includes('BSH-Nordseestation'), 'Node-RED bietet unabhängige Wetter- und Tideauswahl im gemeinsamen V2-Design');
@@ -386,13 +398,24 @@ check(runWeatherValidator(JSON.stringify(incompleteWeather)) === null && JSON.st
 const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hourly[0], t: 'not-a-date' }] };
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
-check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboard.includes('v2WeatherChartWindow') && dashboard.includes('tide.length>=2?new Date(tide[0].date)') && dashboard.includes('24*60*60*1000') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die Tidekurve auf derselben echten 24-h-Zeitachse ohne einen gerundeten DWD-Rand abzuschneiden');
+check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboard.includes('v2WeatherChartWindow') && dashboard.includes('tide.length>=2?new Date(tide[0].date)') && dashboard.includes('24*60*60*1000') && dashboard.includes("return'BSH Tide '") && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide'), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die Tidekurve auf derselben echten 24-h-Zeitachse ohne einen gerundeten DWD-Rand abzuschneiden');
 check(dashboard.includes("value?.license!=='CC BY 4.0'")
   && dashboard.includes("value?.licenseUrl!=='https://creativecommons.org/licenses/by/4.0/'")
   && dashboard.includes("typeof value?.changes!=='string'"), 'Dashboard akzeptiert Tide nur mit dem validierten CC-BY-Metadatenvertrag');
 check(dashboard.includes('v2TemperatureScale') && dashboardV2Markup.includes('cc2-chart-temp-scale') && dashboardV2Markup.includes('v2TemperatureScale.min') && dashboardV2Markup.includes('v2TemperatureScale.max') && dashboardV2Css.includes('.cc2-chart-temp-scale text'), 'Wetterchart zeigt eine numerische linke Temperaturachse in Grad Celsius');
 check(["'freezing-rain':'cc2-weather-freezing-rain'", "sleet:'cc2-weather-sleet'", "hail:'cc2-weather-hail'"].every(token => dashboard.includes(token)) && ['cc2-weather-freezing-rain', 'cc2-weather-sleet', 'cc2-weather-hail'].every(icon => dashboardV2Markup.includes(`id="${icon}"`)), 'Dashboard unterscheidet gefrierenden Niederschlag, Schneeregen und defensiven DWD-Hagel visuell');
 check(dashboard.includes("||'cc2-weather-unknown'") && dashboardV2Markup.includes('id="cc2-weather-unknown"'), 'Unbekannte DWD-Codes bleiben neutral und werden nicht als bewölkt erfunden');
+check(dashboardV2Markup.includes('--cc2-weather-line')
+  && dashboardV2Markup.includes('--cc2-weather-sun')
+  && dashboardV2Markup.includes('--cc2-weather-rain')
+  && dashboardV2Css.includes('--cc2-weather-line: light-dark(#10161a, #f3f7fa)')
+  && dashboardV2Css.includes('--cc2-weather-sun: light-dark(#9b5b00, #f4c94c)')
+  && dashboardV2Css.includes('--cc2-weather-rain: light-dark(#006f9f, #59caff)'), 'Node-RED-Wettersymbole spiegeln die mehrfarbigen GX/WASM-Canvas-Linien für Kontur, Sonne und Niederschlag');
+check(dashboardV2Css.includes('.cc2-chart-tide { fill: none; stroke: light-dark(#008da3, #63e6f2); stroke-width: 1.8;')
+  && !dashboardV2Css.includes('stroke-dasharray'), 'Tide erscheint wie in GX/WASM als durchgezogene türkisfarbene Kurve');
+check(!dashboardV2Markup.includes('DWD · MOSMIX')
+  && !dashboardV2Markup.includes('cc2-weather-summary')
+  && !dashboardV2Markup.includes('cc2-weather-freshness'), 'Die abweichende alte Node-RED-Wettergestaltung ist vollständig entfernt');
 
 const transitSymbols = [...dashboardV2Markup.matchAll(/class="cc2-brand-line-(?:dark|light)" src="data:image\/png;base64,([^"]+)"/g)];
 check((dashboardV2MarkupSource.match(/__CC2_TRANSIT_(?:DARK|LIGHT)_DATA_URI__/g) || []).length === 2, 'V2-Quelle bindet beide Transit-Symbole reproduzierbar aus dashboard/assets ein');
@@ -413,10 +436,10 @@ check(!v2CloseMethod.includes('this.command') && !v2CloseMethod.includes('this.s
 for (const asset of ['/camper-assets/VehicleLightsLeft.png', '/camper-assets/VehicleLightsRight.png']) {
   check(dashboardV2Markup.includes(asset), `V2 verwendet reales Fahrzeugbild ${asset}`);
 }
-for (const coordinate of ['left:63.7%;top:32.2%', 'left:77.69%;top:3.19%', 'left:73.29%;top:0', 'left:27.56%;top:6.41%', 'left:31.72%;top:32.2%', 'left:7.78%;top:4.86%', 'left:3.83%;top:0', 'left:44.66%;top:10.17%']) {
+for (const coordinate of ['left:63.7%;top:32.2%', 'left:77.69%;top:3.19%', 'left:73.29%;top:0', 'left:27.56%;top:6.41%', 'left:31.72%;top:32.2%', 'left:7.78%;top:4.86%', 'left:3.83%;top:0', 'left:40.9%;top:.6%']) {
   check(dashboardV2Markup.includes(coordinate), `V2-Fotohotspot entspricht der Designquelle: ${coordinate}`);
 }
-for (const geometry of ['x1="168" y1="49" x2="317" y2="49"', 'x="368" y="34" width="16" height="7"', 'x="432" y="5" width="14" height="14"', 'x1="263" y1="60" x2="403" y2="65"', 'x="63" y="41" width="16" height="7"', 'x="43" y="5" width="14" height="14"']) {
+for (const geometry of ['x1="168" y1="49" x2="317" y2="49"', 'x="368" y="34" width="16" height="7"', 'x="432" y="5" width="14" height="14"', 'x1="263" y1="36" x2="399" y2="41"', 'x="63" y="41" width="16" height="7"', 'x="43" y="5" width="14" height="14"']) {
   check(dashboardV2Markup.includes(geometry), `Sichtbarer Lichtkörper sitzt in exakter 560x360-Assetgeometrie: ${geometry}`);
 }
 check(dashboardV2Markup.includes('class="cc2-transit-canvas"') && dashboardV2Css.includes('aspect-ratio: 560 / 360;'), 'Bild, SVG-Lichtkörper und Touchzonen teilen dieselbe unverzerrte 560x360-Fläche');
@@ -462,12 +485,14 @@ check(dashboardV2Markup.includes('s.energy?.indevolt?.solarPower') && dashboardV
 check(snapshotFunction.includes('totalSolarPower: victronSolar == null ? null : Number(victronSolar)'), 'Solar gesamt verwendet ausschließlich den Victron-SystemCalc-MPPT-Aggregatwert');
 check(!snapshotFunction.includes('Number(victronSolar || 0) + Number(indevoltSolar || 0)'), 'INDEVOLT-Solar wird nicht mehr in Solar gesamt eingerechnet');
 const batteryPowerInput = get('ec2c675c3d08f88c');
-check(batteryPowerInput.type === 'victron-input-battery'
-  && batteryPowerInput.service === 'com.victronenergy.battery/277'
-  && batteryPowerInput.path === '/Dc/0/Power', 'SmartShunt-Batterieleistung bleibt für Detaildaten unverändert erhalten');
+check(batteryPowerInput.type === 'victron-input-system'
+  && batteryPowerInput.service === 'com.victronenergy.system'
+  && batteryPowerInput.path === '/Dc/Battery/Power'
+  && batteryPowerInput.serviceObj?.service === 'com.victronenergy.system'
+  && batteryPowerInput.pathObj?.path === '/Dc/Battery/Power', 'Batterieleistung nutzt exakt Global.system.battery.power aus der originalen gui-v2');
 check(batteryPowerInput.onlyChanges === false
   && targetsOf(batteryPowerInput.id).includes('357fe2bdfa339671')
-  && get('357fe2bdfa339671').rules?.some(rule => rule.p === 'topic' && rule.to === 'battery.power'), 'Bestehender Batteriepfad behält Polling und Zieltopic bei');
+  && get('357fe2bdfa339671').rules?.some(rule => rule.p === 'topic' && rule.to === 'battery.power'), 'Cerbo-Systembatteriepfad behält Polling und das von SYNC gelesene Zieltopic bei');
 const batteryTimeToGoInput = get('e5ad58b50715f803');
 check(batteryTimeToGoInput.type === 'victron-input-battery'
   && batteryTimeToGoInput.service === 'com.victronenergy.battery/277'
