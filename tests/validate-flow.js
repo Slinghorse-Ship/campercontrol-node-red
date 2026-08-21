@@ -264,6 +264,11 @@ check(dashboardV2Markup.includes('Deutscher Wetterdienst (DWD)'), 'Wetterpanel z
 check(dashboardV2Markup.includes('@change="v2SetLocation(\'weather\',$event.target.value)"')
   && dashboardV2Markup.includes('@change="v2SetLocation(\'tide\',$event.target.value)"')
   && dashboardV2Markup.includes('BSH-Nordseestation'), 'Node-RED bietet unabhängige Wetter- und Tideauswahl im gemeinsamen V2-Design');
+check(dashboardV2Markup.includes('<details class="cc2-data-license"><summary>Datenquellen &amp; Lizenzen</summary>')
+  && dashboardV2Markup.includes('Quelle: Deutscher Wetterdienst · CC BY 4.0')
+  && dashboardV2Markup.includes('© Bundesamt für Seeschifffahrt und Hydrographie (BSH) · CC BY 4.0')
+  && dashboardV2Markup.includes('CamperControl-Software · PolyForm Noncommercial 1.0.0')
+  && dashboardV2Css.includes('.cc2-data-license[open]'), 'Daten- und Softwarelizenzen bleiben standardmäßig geschlossen unter Wetter/Tide');
 check(dashboard.includes("this.settingsPatch({weatherLocation:next})")
   && dashboard.includes('if(raw.length>1024)return')
   && dashboard.includes("sectionName!=='weather'&&sectionName!=='tide'"), 'Standortauswahl schreibt ausschließlich einen begrenzten validierten Settings-Patch');
@@ -382,6 +387,9 @@ const invalidTimeWeather = { ...weatherFixture, hourly: [{ ...weatherFixture.hou
 check(runWeatherValidator(JSON.stringify(invalidTimeWeather)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Ungültige Wetterzeitstempel werden verworfen');
 check(runWeatherValidator('x'.repeat(16 * 1024 + 1)) === null && JSON.stringify(weatherStore.get('camperWeather')) === retainedWeather, 'Überlanges Wetter wird verworfen ohne den Cache zu verändern');
 check(dashboard.includes('v2Tides') && dashboard.includes('v2TidePoints') && dashboard.includes('v2TideScale') && dashboard.includes('v2WeatherChartWindow') && dashboard.includes('tide.length>=2?new Date(tide[0].date)') && dashboard.includes('24*60*60*1000') && dashboardV2Markup.includes('cc2-weather-sun-tide') && dashboardV2Markup.includes('cc2-chart-tide') && dashboardV2Markup.includes('Tide: '), 'Wetterpanel zeigt Sonne, BSH-HW/NW und die Tidekurve auf derselben echten 24-h-Zeitachse ohne einen gerundeten DWD-Rand abzuschneiden');
+check(dashboard.includes("value?.license!=='CC BY 4.0'")
+  && dashboard.includes("value?.licenseUrl!=='https://creativecommons.org/licenses/by/4.0/'")
+  && dashboard.includes("typeof value?.changes!=='string'"), 'Dashboard akzeptiert Tide nur mit dem validierten CC-BY-Metadatenvertrag');
 check(dashboard.includes('v2TemperatureScale') && dashboardV2Markup.includes('cc2-chart-temp-scale') && dashboardV2Markup.includes('v2TemperatureScale.min') && dashboardV2Markup.includes('v2TemperatureScale.max') && dashboardV2Css.includes('.cc2-chart-temp-scale text'), 'Wetterchart zeigt eine numerische linke Temperaturachse in Grad Celsius');
 check(["'freezing-rain':'cc2-weather-freezing-rain'", "sleet:'cc2-weather-sleet'", "hail:'cc2-weather-hail'"].every(token => dashboard.includes(token)) && ['cc2-weather-freezing-rain', 'cc2-weather-sleet', 'cc2-weather-hail'].every(icon => dashboardV2Markup.includes(`id="${icon}"`)), 'Dashboard unterscheidet gefrierenden Niederschlag, Schneeregen und defensiven DWD-Hagel visuell');
 check(dashboard.includes("||'cc2-weather-unknown'") && dashboardV2Markup.includes('id="cc2-weather-unknown"'), 'Unbekannte DWD-Codes bleiben neutral und werden nicht als bewölkt erfunden');
