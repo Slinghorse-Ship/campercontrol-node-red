@@ -5,5 +5,6 @@
 *.json text eol=lf
 *.html text eol=lf
 *.md text eol=lf
+cerbo-service/campercontrol-dbus-service/run text eol=lf
 cerbo-service/wifi-connect-http-service/run text eol=lf
-
+cerbo-service/sudoers-campercontrol text eol=lf
