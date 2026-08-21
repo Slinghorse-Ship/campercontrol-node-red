@@ -150,7 +150,7 @@ const hasImmediateDuplicateWrite = flows.filter(node => node.type === 'function'
 check(!hasImmediateDuplicateWrite, 'Keine unmittelbar doppelten Context-Writes verbleiben');
 check(!get('12f9ef01215ad8d3').func.includes('persistentStore') && (get('12f9ef01215ad8d3').func.match(/flow\.set\('autotermPersistent'/g) || []).length === 1, 'AUTOTERM besitzt genau einen persistenten Default-Store-Schreibpfad');
 check(!resourceSettingsFunction.includes("else flow.set('camperConfig'") && resourceSettingsFunction.includes("const persist = () => flow.set('camperConfig', cfg);"), 'Settings schreiben Konfiguration nur bei echter Änderung oder Migration');
-check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-500)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Events und Commands besitzen feste Retention einschließlich Legacy-Cleanup');
+check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-25)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Die letzten 25 Events und die Commands besitzen feste Retention einschließlich Legacy-Cleanup');
 check(resourceSnapshotFunction.includes('const firstFreshIndex = list.findIndex') && !resourceSnapshotFunction.includes('list.shift()') && resourceSnapshotFunction.includes('list.splice(0, list.length - maxPoints)') && resourceSnapshotFunction.includes('recent: history.quarterHour.slice(-24)'), 'Historie wird linear nach Zeitfenster und harter Punktzahl beschnitten; der Snapshot enthält 24 Punkte');
 check(resourceSnapshotFunction.includes('3600000, 1440);') && resourceSnapshotFunction.includes('86400000, 2880);') && resourceSnapshotFunction.includes('86400000, 365);'), 'Historie ist hart auf 1.440 Minuten-, 2.880 Viertelstunden- und 365 Tagespunkte begrenzt');
 check(resourceSettingsFunction.includes('minuteHours, 24, 1, 24') && resourceSettingsFunction.includes('quarterDays, 30, 7, 30') && resourceSettingsFunction.includes('dailyDays, 365, 30, 365'), 'Historienkonfiguration bleibt bei höchstens 24 h, 30 d und 365 d');
@@ -668,15 +668,40 @@ check(settingsDashboard.includes('v-model="cfg.climateAutomation.controlMode"')
   && settingsDashboard.includes('<option value="auto">Automatik</option>')
   && !settingsDashboard.includes('Klimaautomatik aktiv'), 'Einstellungen verwenden denselben dreistufigen Klimavertrag statt eines widersprüchlichen Kontrollkästchens');
 
+check(migratedConfig.coldProtection?.enabled === false
+  && migratedConfig.coldProtection?.startTemperature === 3
+  && migratedConfig.coldProtection?.stopTemperature === 5
+  && migratedConfig.coldProtection?.power === 4
+  && migratedConfig.coldProtection?.sensor === 'floor', 'Migration ergänzt den sicheren ausgeschalteten Kälteschutzstandard 3/5 °C · Stufe 4 · Boden');
+const coldProtectionPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { coldProtection: {
+  enabled: true, startTemperature: 9, stopTemperature: 1, power: 99, sensor: 'ceiling'
+} } } }, designFlow, {}, {}, {}, {});
+const coldProtectionPatched = coldProtectionPatchOutput?.[0]?.payload?.config?.coldProtection || {};
+check(coldProtectionPatched.enabled === true
+  && coldProtectionPatched.startTemperature === 8
+  && coldProtectionPatched.stopTemperature === 9
+  && coldProtectionPatched.power === 10
+  && coldProtectionPatched.sensor === 'floor', 'Kälteschutz-Patch begrenzt Temperaturen und Stufe und hält B7B8/Boden fest');
+check(settingsDashboard.includes('<h2>AUTOTERM-Kälteschutz</h2>')
+  && settingsDashboard.includes('v-model="cfg.coldProtection.enabled"')
+  && settingsDashboard.includes('saveColdProtection(){this.patch({coldProtection:this.cfg.coldProtection})}')
+  && settingsDashboard.includes('Ruuvi B7B8 · Boden'), 'Der zentrale Web-Schalter und alle Kälteschutzwerte liegen unter Einstellungen');
+const autotermDashboard = get('bc45ae1b0fc6611d').format || '';
+check(!autotermDashboard.includes('v-model="cfg.frostEnabled"')
+  && autotermDashboard.includes('Kälteschutz wird zentral unter Einstellungen konfiguriert'), 'Die AUTOTERM-Technikseite besitzt keinen widersprüchlichen zweiten Frostschutzschalter');
+
 const climateControllerFunction = get('ec5c5c0618d69359').func || '';
 check(climateControllerFunction.includes("const controlMode = ['off', 'manual', 'auto']")
   && climateControllerFunction.includes("const forceOff = controlMode === 'off'")
   && snapshotFunction.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)"), 'Controller und Snapshot führen die drei Klima-Betriebsarten explizit');
-const runClimateController = ({ controlMode, heaterOwned = false, fanOwned = false, heaterRunning = false, fanRunning = false, temperature = 22 }) => {
+const runClimateController = ({ controlMode, heaterOwned = false, fanOwned = false, heaterRunning = false, fanRunning = false, temperature = 22, frostEnabled = false, startedByFrost = false, heaterConfigMatches = true }) => {
   const values = new Map([
-    ['camperConfig', { climateAutomation: { controlMode, enabled: controlMode === 'auto', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 } }],
-    ['state', { running: heaterRunning, cooling: false }],
-    ['cfg', { setpoint: 22 }],
+    ['camperConfig', {
+      climateAutomation: { controlMode, enabled: controlMode === 'auto', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 },
+      coldProtection: { enabled: frostEnabled, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }
+    }],
+    ['state', { running: heaterRunning, cooling: false, startedByFrost }],
+    ['cfg', heaterConfigMatches ? { setpoint: 22, frostEnabled, frostTemp: 3, frostStop: 5, frostPower: 4 } : { setpoint: 22 }],
     ['camperAdapters', { 'maxxfan.state': { on: fanRunning, speed: 50 } }],
     ['climateAutomationState', { demand: 'idle', heaterOwned, fanOwned, roomTemperature: temperature, ceilingTemperature: temperature, sensorOnline: true, enabled: false, controlMode: 'manual' }]
   ]);
@@ -697,6 +722,21 @@ check(offClimate.output?.[0]?.[0]?.payload?.action === 'stop'
 const autoClimate = runClimateController({ controlMode: 'auto', temperature: 19 });
 check(autoClimate.output?.[0]?.some(message => message.payload?.action === 'start')
   && autoClimate.state?.demand === 'heat', 'Auto nutzt weiterhin die bestehende temperaturgeführte Cerbo-Regelung');
+const coldProtectionOffMode = runClimateController({ controlMode: 'off', heaterRunning: true, frostEnabled: true, startedByFrost: true });
+check(coldProtectionOffMode.output?.[0] == null
+  && coldProtectionOffMode.output?.[1] == null, 'Klima-Aus beendet eine vom aktivierten Kälteschutz gestartete AUTOTERM-Heizung nicht');
+const coldProtectionSync = runClimateController({ controlMode: 'manual', frostEnabled: true, heaterConfigMatches: false });
+check(coldProtectionSync.output?.[0]?.map(message => message.payload?.key).join(',') === 'frostTemp,frostStop,frostPower,frostEnabled'
+  && coldProtectionSync.output?.[0]?.every(message => message.payload?._coldProtectionSync === true), 'Kälteschutzwerte werden vor dem Aktivieren sicher und vollständig an den AUTOTERM-Kern gespiegelt');
+check(snapshotFunction.includes('coldProtection: {')
+  && snapshotFunction.includes("sensor: 'floor'")
+  && snapshotFunction.includes("sensorName: heater.frostSensor || 'Ruuvi B7B8 · Boden'"), 'Der öffentliche Klimasnapshot liefert Kälteschutzstatus und festen Bodensensor');
+const operationsDashboard = get('976479fdec9530f1').format || '';
+check(snapshotFunction.includes('const retainedEvents = events.slice(-25)')
+  && snapshotFunction.includes('recent: events.slice(-25).reverse()')
+  && operationsDashboard.includes('(ops.events?.recent||[]).slice(0,25)')
+  && !operationsDashboard.includes("sendCommand('system','acknowledge'")
+  && !operationsDashboard.includes('evt.acknowledgedAt'), 'Meldungen sind ein bestätigungsfreier Verlauf mit maximal 25 gespeicherten Einträgen');
 
 const lightingPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { lightingScenes: {
   camping: { inside_main: 42.4, outside_front_amber: 37, outside_left: -9, unknown_light: 80 },

@@ -1384,6 +1384,13 @@ const cleanEmbeddedDefaults = source => source.replace(
       controlMode: climateControlMode,
       enabled: climateControlMode === 'auto'
     });
+    value.coldProtection = Object.assign({
+      enabled: false,
+      startTemperature: 3,
+      stopTemperature: 5,
+      power: 4,
+      sensor: 'floor'
+    }, value.coldProtection || {}, { sensor: 'floor' });
     value.ventilation = Object.assign({}, value.ventilation || {}, {
       enabled: true,
       manualOn: false,
@@ -1627,6 +1634,45 @@ if (!settings.func.includes('const sourceClimateAutomation = object(source.clima
   );
 }
 
+if (!settings.func.includes('const sourceColdProtection = object(source.coldProtection)')) {
+  settings.func = replaceOnce(
+    settings.func,
+    `    cfg.temperatureSensors = {`,
+    `    const sourceColdProtection = object(source.coldProtection) ? source.coldProtection : {};
+    const coldProtectionStart = number(sourceColdProtection.startTemperature, 3, 0, 8);
+    cfg.coldProtection = {
+        enabled: boolean(sourceColdProtection.enabled, false),
+        startTemperature: coldProtectionStart,
+        stopTemperature: Math.max(coldProtectionStart + 1, number(sourceColdProtection.stopTemperature, 5, 1, 12)),
+        power: Math.round(number(sourceColdProtection.power, 4, 1, 10)),
+        // Der B7B8-Bodensensor ist die feste Frostschutzreferenz. Eine freie
+        // Zuordnung könnte den Schutz unbemerkt auf einen warmen Sensor legen.
+        sensor: 'floor'
+    };
+    cfg.temperatureSensors = {`,
+    'Zentrale validierte AUTOTERM-Kälteschutzkonfiguration'
+  );
+}
+
+// Neue sichere Standardfelder werden genau einmal in den persistenten Bestand
+// migriert. Ein normaler unveränderter Tick erzeugt danach keinen Flash-Write.
+settings.func = settings.func.replace(
+  "let changed = storedHardwareProfile !== DEFAULTS.mappings.hardwareProfile;",
+  "let changed = storedHardwareProfile !== DEFAULTS.mappings.hardwareProfile || JSON.stringify(cfg) !== JSON.stringify(stored);"
+);
+
+// Die beiden Ruuvi-Dienste sind hardwarefest: /24 Decke und /25 B7B8 Boden.
+settings.func = settings.func.replace(
+  `    cfg.temperatureSensors = {
+        ceilingService: 'com.victronenergy.temperature/24',
+        floorService: ''
+    };`,
+  `    cfg.temperatureSensors = {
+        ceilingService: 'com.victronenergy.temperature/24',
+        floorService: 'com.victronenergy.temperature/25'
+    };`
+);
+
 if (!climateAutomationController.func.includes("const controlMode = ['off', 'manual', 'auto']")) {
   climateAutomationController.func = replaceOnce(
     climateAutomationController.func,
@@ -1680,6 +1726,50 @@ const automationEnabled = controlMode === 'auto';`,
   );
 }
 
+if (!climateAutomationController.func.includes('const coldProtection = Object.assign({ enabled: false, startTemperature: 3')) {
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    `const heaterMessages = [];
+const fanMessages = [];
+const powerMessages = [];`,
+    `const heaterMessages = [];
+const fanMessages = [];
+const powerMessages = [];
+const coldProtection = Object.assign({ enabled: false, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }, cfg.coldProtection || {});
+const heaterConfiguration = flow.get('cfg') || {};
+const frostSettings = coldProtection.enabled === true
+    ? [['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)], ['frostEnabled', true]]
+    : [['frostEnabled', false], ['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)]];
+for (const [key, value] of frostSettings) {
+    if (heaterConfiguration[key] !== value) heaterMessages.push({ topic: 'ui', payload: { action: 'set', key, value, _coldProtectionSync: true } });
+}
+const frostRunActive = coldProtection.enabled === true && heater.startedByFrost === true;`,
+    'Zentrale Kälteschutzeinstellungen an AUTOTERM spiegeln'
+  );
+  climateAutomationController.func = climateAutomationController.func
+    .replace(
+      "if (heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });",
+      "if (heaterRunning && heater.cooling !== true && !frostRunActive) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });"
+    )
+    .replace(
+      "if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });",
+      "if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true && !frostRunActive) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });"
+    );
+}
+climateAutomationController.func = climateAutomationController.func.replace(
+  `const frostSettings = {
+    frostEnabled: coldProtection.enabled === true,
+    frostTemp: Number(coldProtection.startTemperature),
+    frostStop: Number(coldProtection.stopTemperature),
+    frostPower: Number(coldProtection.power)
+};
+for (const [key, value] of Object.entries(frostSettings)) {`,
+  `const frostSettings = coldProtection.enabled === true
+    ? [['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)], ['frostEnabled', true]]
+    : [['frostEnabled', false], ['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)]];
+for (const [key, value] of frostSettings) {`
+);
+
 if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)")) {
   state.func = replaceOnce(
     state.func,
@@ -1692,6 +1782,39 @@ if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climat
                 : (climateAutomation.enabled === true ? 'auto' : 'manual'),`,
     'Klima-Betriebsart im Zustandssnapshot'
   );
+}
+
+if (!state.func.includes('const coldProtectionConfig = Object.assign({ enabled: false, startTemperature: 3')) {
+  state.func = replaceOnce(
+    state.func,
+    "const heaterCfg = flow.get('cfg') || {};",
+    "const heaterCfg = flow.get('cfg') || {};\nconst coldProtectionConfig = Object.assign({ enabled: false, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }, cfg.coldProtection || {});",
+    'Kälteschutzkonfiguration im Snapshot'
+  );
+  state.func = replaceOnce(
+    state.func,
+    `        heater: {`,
+    `        coldProtection: {
+            enabled: coldProtectionConfig.enabled === true,
+            active: heater.startedByFrost === true,
+            startTemperature: Number(coldProtectionConfig.startTemperature),
+            stopTemperature: Number(coldProtectionConfig.stopTemperature),
+            power: Number(coldProtectionConfig.power),
+            sensor: 'floor',
+            sensorName: heater.frostSensor || 'Ruuvi B7B8 · Boden',
+            sensorTemperature: heater.frostTemperature == null ? null : Number(heater.frostTemperature),
+            sensorOnline: floorTemperature.online === true,
+            heaterOnline: heater.serialReady === true && now - Number(heater.heaterSeen || 0) < 30000,
+            startBlocked: heater.startBlocked || ''
+        },
+        heater: {`,
+    'Kälteschutzstatus im öffentlichen Klimasnapshot'
+  );
+  state.func = state.func
+    .replace('frostEnabled: heaterCfg.frostEnabled === true,', 'frostEnabled: coldProtectionConfig.enabled === true,')
+    .replace('frostTemp: Number(heaterCfg.frostTemp || 5),', 'frostTemp: Number(coldProtectionConfig.startTemperature),')
+    .replace('frostStop: Number(heaterCfg.frostStop || 10),', 'frostStop: Number(coldProtectionConfig.stopTemperature),')
+    .replace('frostPower: Number(heaterCfg.frostPower || 4),', 'frostPower: Number(coldProtectionConfig.power),');
 }
 
 if (!settings.func.includes('let weatherLocationWrite = false;')) {
@@ -1801,7 +1924,7 @@ const cfg = flow.get('camperConfig') || ${defaultJson};
 const query = msg.req && msg.req.query || {};
 msg.headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
 const resource = String(msg._camperResource || '');
-if (resource === 'events') msg.payload = { ok: true, events: (flow.get('camperEvents') || []).slice().reverse() };
+if (resource === 'events') msg.payload = { ok: true, events: (flow.get('camperEvents') || []).slice(-25).reverse() };
 else if (resource === 'commands') msg.payload = { ok: true, commands: (flow.get('camperCommands') || []).slice().reverse() };
 else if (resource === 'diagnostics') msg.payload = { ok: true, diagnostics: ((flow.get('camperSnapshot') || {}).operations || {}).devices || [] };
 else if (resource === 'history') {
@@ -2223,6 +2346,37 @@ settingsUi.format = settingsUi.format.replace(
   '<label>Betriebsart<select v-model="cfg.climateAutomation.controlMode" @change="saveClimateAutomation"><option value="off">Aus</option><option value="manual">Manuell</option><option value="auto">Automatik</option></select></label>'
 );
 
+if (!settingsUi.format.includes('<h2>AUTOTERM-Kälteschutz</h2>')) {
+  settingsUi.format = settingsUi.format
+    .replace(
+      '  <section><h2>12 V Hauptkanäle: Namen, Kanal & Reihenfolge</h2>',
+      '  <section><h2>AUTOTERM-Kälteschutz</h2><p>Unabhängiger Frostschutz über den fest zugeordneten Ruuvi B7B8 am Boden. Der Start bleibt zusätzlich durch AUTOTERM-Initialisierung, aktuelle Batteriespannung und Unterspannungsschutz abgesichert.</p><div class="two"><label><input type="checkbox" v-model="cfg.coldProtection.enabled" @change="saveColdProtection"> Kälteschutz aktiv</label><label>Start unter °C<input type="number" min="0" max="8" step="1" v-model.number="cfg.coldProtection.startTemperature" @change="saveColdProtection"></label><label>Stopp ab °C<input type="number" min="1" max="12" step="1" v-model.number="cfg.coldProtection.stopTemperature" @change="saveColdProtection"></label><label>Heizstufe<input type="number" min="1" max="10" step="1" v-model.number="cfg.coldProtection.power" @change="saveColdProtection"></label><label>Fester Sensor<input value="Ruuvi B7B8 · Boden" disabled></label></div></section>\n  <section><h2>12 V Hauptkanäle: Namen, Kanal & Reihenfolge</h2>'
+    )
+    .replace(
+      'climateAutomation:{},devices:{}',
+      "climateAutomation:{},coldProtection:{enabled:false,startTemperature:3,stopTemperature:5,power:4,sensor:'floor'},devices:{}"
+    )
+    .replace(
+      'saveClimateAutomation(){this.patch({climateAutomation:this.cfg.climateAutomation})},',
+      'saveClimateAutomation(){this.patch({climateAutomation:this.cfg.climateAutomation})},saveColdProtection(){this.patch({coldProtection:this.cfg.coldProtection})},'
+    );
+}
+
+// Der Kälteschutz besitzt genau einen Schalter unter Einstellungen. Die
+// AUTOTERM-Technikseite zeigt dort nur noch Batterie- und Unterspannungsschutz,
+// damit ein lokaler Zweitschalter nicht gegen die zentrale Konfiguration läuft.
+const autotermSettingsUi = get('bc45ae1b0fc6611d');
+autotermSettingsUi.format = String(autotermSettingsUi.format || '')
+  .replace('<section class="at-card"><h3>Frost- & Batterieschutz</h3>', '<section class="at-card"><h3>Batterie- & Kälteschutz</h3><p class="soc-note">Kälteschutz wird zentral unter Einstellungen konfiguriert: Ruuvi B7B8 · Boden.</p>')
+  .replace(/\s*<label class="check"><input type="checkbox" v-model="cfg\.frostEnabled"[\s\S]*?<\/label>\s*<label>Start unter[\s\S]*?<\/label><label>Stop über[\s\S]*?<\/label>/, '');
+
+const operationsUi = get('976479fdec9530f1');
+operationsUi.format = String(operationsUi.format || '')
+  .replace('<div class="op-count"><b>{{ops.commands?.pendingCount||0}}</b> OFFEN · <b>{{ops.events?.unacknowledgedCount||0}}</b> ALARME</div>', '<div class="op-count"><b>{{ops.commands?.pendingCount||0}}</b> BEFEHLE OFFEN · MELDUNGSVERLAUF</div>')
+  .replace('(ops.events?.recent||[]).slice(0,12)', '(ops.events?.recent||[]).slice(0,25)')
+  .replace('<button v-if="!evt.acknowledgedAt&&(evt.level===\'warning\'||evt.level===\'critical\')" @click="ack(evt)">OK</button><strong v-else>{{evt.acknowledgedAt?\'BESTÄTIGT\':\'\'}}</strong>', '')
+  .replace("ack(e){this.sendCommand('system','acknowledge',e.id,{eventId:e.id})},", '');
+
 settingsUi.format = settingsUi.format
   .replace(/\s*<section class="design-choice">[\s\S]*?<\/section>\s*(?=<section>\s*<h2>System<\/h2>)/, '\n  ')
   .replace(",selectDesign(v){if(!['v1','v2'].includes(v))return;this.cfg.ui=Object.assign({},this.cfg.ui||{},{designVersion:v});this.patch({ui:{designVersion:v}})}", '')
@@ -2402,6 +2556,9 @@ state.func = state.func
     "if (clientsChanged) flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];",
     "if (clientsChanged) flow.set('camperWsClients', clients);\nif (!snapshotChanged) return null;\nreturn [{ payload: snapshot }, messages];"
   )
+  .replace('const retainedEvents = events.slice(-500);', 'const retainedEvents = events.slice(-25);')
+  .replace("unacknowledgedCount: events.filter(item => !item.acknowledgedAt && ['warning', 'critical'].includes(item.level)).length", 'unacknowledgedCount: 0')
+  .replace('recent: events.slice(-12).reverse()', 'recent: events.slice(-25).reverse()')
   .replace(/(?:if \(!snapshotChanged\) return null;\n)+/g, 'if (!snapshotChanged) return null;\n');
 
 if (!state.func.includes('let commandsChanged = false;')) {
