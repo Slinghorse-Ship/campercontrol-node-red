@@ -153,3 +153,11 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   Nicht-Licht-Aktionen wie Wasserpumpe, 230 V, Autoterm oder MaxxFan bleiben
   erhalten und der zentrale Router prüft die gesamte Szene vor dem ersten
   Ausgang atomar.
+
+## Lizenz
+
+Der originale CamperControl-Code dieses Repositories steht unter der
+[PolyForm Noncommercial License 1.0.0](LICENSE.md). Kommerzielle Nutzung ist
+nicht erlaubt. Drittkomponenten sowie DWD-/BSH-Daten behalten ihre jeweiligen
+Rechte und Attributionspflichten; Einzelheiten stehen in [NOTICE.md](NOTICE.md)
+und [DATA-LICENSES.md](DATA-LICENSES.md).

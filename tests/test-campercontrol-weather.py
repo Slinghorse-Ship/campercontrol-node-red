@@ -387,6 +387,10 @@ class CamperControlWeatherTest(unittest.TestCase):
         ]
         six_hours_later = now + dt.timedelta(hours=6)
         public = MODULE._valid_tide_cache(cache, six_hours_later)
+        self.assertEqual(public["attribution"], MODULE.TIDE_ATTRIBUTION)
+        self.assertEqual(public["license"], "CC BY 4.0")
+        self.assertEqual(public["licenseUrl"], "https://creativecommons.org/licenses/by/4.0/")
+        self.assertIn("Kurvenreduktion", public["changes"])
         self.assertEqual(len(public["curve"]), MODULE.TIDE_PUBLIC_CURVE_LIMIT)
         self.assertEqual(MODULE.parse_time(public["curve"][0]["t"]), six_hours_later)
         self.assertEqual(
@@ -484,12 +488,23 @@ class CamperControlWeatherTest(unittest.TestCase):
         self.assertEqual(snapshot["schema"], 1)
         self.assertEqual(snapshot["source"], "DWD MOSMIX_L")
         self.assertEqual(snapshot["attribution"], "Quelle: Deutscher Wetterdienst")
+        self.assertEqual(snapshot["license"], "CC BY 4.0")
+        self.assertEqual(snapshot["licenseUrl"], "https://creativecommons.org/licenses/by/4.0/")
+        self.assertIn("Tagesaggregation", snapshot["changes"])
         self.assertEqual(snapshot["hourly"][0]["tempC"], 20.0)
         self.assertEqual(snapshot["hourly"][7]["icon"], "thunderstorm")
         self.assertEqual(snapshot["hourly"][1]["windKmh"], 7.2)
         self.assertIsNone(snapshot["hourly"][-1]["precipProbabilityPct"])
         self.assertEqual(len(snapshot["daily"]), 6)
         self.assertIsNone(snapshot["daily"][0]["maxHourlyPrecipProbabilityPct"])
+        legacy_cache = dict(snapshot)
+        legacy_cache.pop("license")
+        legacy_cache.pop("licenseUrl")
+        legacy_cache.pop("changes")
+        enriched_cache = MODULE.mark_stale(legacy_cache, dt.datetime(2026, 8, 19, 1, tzinfo=dt.timezone.utc))
+        self.assertEqual(enriched_cache["license"], "CC BY 4.0")
+        self.assertEqual(enriched_cache["licenseUrl"], MODULE.DATA_LICENSE_URL)
+        self.assertEqual(enriched_cache["changes"], MODULE.SOURCE_CHANGES)
         complete_series = {name: list(values) for name, values in series.items()}
         complete_series["R101"][-1] = 10
         complete_series["RR1c"][-1] = 0

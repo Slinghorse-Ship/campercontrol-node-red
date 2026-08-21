@@ -115,7 +115,8 @@ UTC in seine Gerätezeitzone.
 
 `/State/Weather` ist ein kompaktes JSON-Objekt (Schema 1):
 
-- `source`, `attribution`, `station`, `modelRunUtc`, `fetchedAtUtc`, `stale`
+- `source`, `attribution`, `license`, `licenseUrl`, `changes`, `station`,
+  `modelRunUtc`, `fetchedAtUtc`, `stale`
 - `timezone` und lokal berechnete `sun`-Zeiten (`riseUtc`, `setUtc`)
 - `hourly`: 48 Stunden mit `t`, `tempC`, `precipProbabilityPct`, `precipMm`,
   `ww`, `icon`, `windKmh`, `windDeg`, `gustKmh`
@@ -123,7 +124,8 @@ UTC in seine Gerätezeitzone.
   **maximaler stündlicher** Niederschlagswahrscheinlichkeit, Wettercode,
   Wind/Gust und Sonnenauf-/untergang
 - optional `tides`:
-  - `source:"BSH"`, `attribution`, `updatedUtc`, `stale`,
+  - `source:"BSH"`, `attribution`, `license`, `licenseUrl`, `changes`,
+    `updatedUtc`, `stale`,
     `referenceLevel:"PNP"`
   - `station:{id,name,distanceKm}`
   - `nextHigh:{t,heightM}` und `nextLow:{t,heightM}`; beide Zeiten sind UTC,

@@ -321,6 +321,9 @@ const weatherFixture = {
   schema: 1,
   source: 'DWD MOSMIX_L',
   attribution: 'Quelle: Deutscher Wetterdienst',
+  license: 'CC BY 4.0',
+  licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
+  changes: 'Stationsauswahl, Normalisierung und Tagesaggregation durch CamperControl',
   station: { id: '10641', name: 'Köln/Bonn' },
   modelRunUtc: '2026-08-20T00:00:00Z',
   fetchedAtUtc: '2026-08-20T05:00:00Z',
@@ -331,6 +334,8 @@ const weatherFixture = {
   daily: [{ date: '2026-08-20', minC: 12, maxC: 22, precipMm: 1.4, maxHourlyPrecipProbabilityPct: 60, ww: 61, icon: 'rain', windMaxKmh: 18, gustMaxKmh: 30, riseUtc: '2026-08-20T04:20:00Z', setUtc: '2026-08-20T18:45:00Z' }],
   tides: {
     source: 'BSH', attribution: '© Bundesamt für Seeschifffahrt und Hydrographie (BSH)',
+    license: 'CC BY 4.0', licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
+    changes: 'Nordseestationsauswahl, UTC-Normalisierung, cm→m und Kurvenreduktion durch CamperControl',
     station: { id: 'cuxhaven_steubenhoeft', name: 'Cuxhaven, Steubenhöft', distanceKm: 12.4, latitude: 53.86, longitude: 8.71 },
     updatedUtc: '2026-08-20T05:00:00Z', stale: false, referenceLevel: 'PNP',
     nextHigh: { t: '2026-08-20T08:20:00Z', heightM: 7.31 },
@@ -343,13 +348,15 @@ const weatherFixture = {
   }
 };
 const acceptedWeather = runWeatherValidator({ value: JSON.stringify(weatherFixture) });
-check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31 && acceptedWeather.payload.tides.curve.length === 3, 'Gültiges D-Bus-Wetter samt kompakter Tidekurve wird als Snapshot-Änderung übernommen');
+check(acceptedWeather?.topic === 'weather' && acceptedWeather?.payload?.schema === 1 && acceptedWeather.payload.license === 'CC BY 4.0' && acceptedWeather.payload.licenseUrl === 'https://creativecommons.org/licenses/by/4.0/' && acceptedWeather?.payload?.tides?.nextHigh?.heightM === 7.31 && acceptedWeather.payload.tides.license === 'CC BY 4.0' && acceptedWeather.payload.tides.curve.length === 3, 'Gültiges D-Bus-Wetter samt CC-BY-Hinweisen und kompakter Tidekurve wird als Snapshot-Änderung übernommen');
 check(weatherStore.get('camperWeather')?.hourly?.[0]?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.latitude === undefined && weatherStore.get('camperWeather')?.tides?.station?.longitude === undefined, 'Wettervalidator whitelisted Felder und übernimmt keine GPS-Koordinaten');
 check(runWeatherValidator(JSON.stringify(weatherFixture)) === null, 'Identisches Wetter erzeugt keine zweite Snapshot-Aktualisierung');
 const nullHeightTides = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:01Z', tides: { ...weatherFixture.tides, nextLow: { ...weatherFixture.tides.nextLow, heightM: null } } };
 check(runWeatherValidator(JSON.stringify(nullHeightTides))?.payload?.tides?.nextLow?.heightM === null, 'BSH-Ereignis ohne belastbare Höhe bleibt mit null erhalten und wird nicht zu 0 erfunden');
 const wrongTideSource = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:02Z', tides: { ...weatherFixture.tides, source: 'unofficial' } };
 check(runWeatherValidator(JSON.stringify(wrongTideSource))?.payload?.tides === undefined, 'Nur der explizite BSH-Tidevertrag wird akzeptiert');
+const wrongTideLicense = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:02Z', tides: { ...weatherFixture.tides, license: 'proprietary' } };
+check(runWeatherValidator(JSON.stringify(wrongTideLicense))?.payload?.tides === undefined, 'BSH-Tide ohne den validierten CC-BY-4.0-Hinweis wird fail-closed entfernt');
 const invalidTideTime = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:03Z', tides: { ...weatherFixture.tides, nextHigh: { ...weatherFixture.tides.nextHigh, t: 'not-a-date' } } };
 check(runWeatherValidator(JSON.stringify(invalidTideTime))?.payload?.tides === undefined, 'Ungültige BSH-Ereigniszeit wird fail-closed entfernt');
 const acceptedBoundaryTideCurve = { ...weatherFixture, fetchedAtUtc: '2026-08-20T05:00:04Z', tides: { ...weatherFixture.tides, curve: Array.from({ length: 27 }, (_, index) => ({ t: new Date(Date.UTC(2026, 7, 20, 6 + index)).toISOString(), heightM: 5 })) } };

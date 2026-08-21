@@ -221,6 +221,9 @@ if (own(source, 'tides') && source.tides != null) {
     const candidate = object(tideSource) ? {
         source: required(tideSource, 'source', value => value === 'BSH' ? value : undefined),
         attribution: required(tideSource, 'attribution', value => string(value, 256)),
+        license: required(tideSource, 'license', value => value === 'CC BY 4.0' ? value : undefined),
+        licenseUrl: required(tideSource, 'licenseUrl', value => value === 'https://creativecommons.org/licenses/by/4.0/' ? value : undefined),
+        changes: required(tideSource, 'changes', value => string(value, 256)),
         station: tideStation,
         updatedUtc: required(tideSource, 'updatedUtc', timestamp),
         stale: tideSource.stale,
@@ -232,7 +235,10 @@ if (own(source, 'tides') && source.tides != null) {
     if (tideCurveValid && validValues(candidate) && validValues(tideStation) && validValues(candidate.nextHigh) && validValues(candidate.nextLow) && typeof candidate.stale === 'boolean') tides = candidate;
 }
 const weather = {
-    schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)), station,
+    schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)),
+    license: required(source, 'license', value => value === 'CC BY 4.0' ? value : undefined),
+    licenseUrl: required(source, 'licenseUrl', value => value === 'https://creativecommons.org/licenses/by/4.0/' ? value : undefined),
+    changes: required(source, 'changes', value => string(value, 256)), station,
     modelRunUtc: required(source, 'modelRunUtc', value => timestamp(value, true)), fetchedAtUtc: required(source, 'fetchedAtUtc', timestamp), stale: source.stale,
     timezone: required(source, 'timezone', value => string(value, 64)), sun, hourly, daily
 };
