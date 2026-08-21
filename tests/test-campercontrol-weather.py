@@ -327,6 +327,11 @@ class CamperControlWeatherTest(unittest.TestCase):
         value["geometry"]["type"] = "LineString"
         with self.assertRaises(ValueError):
             MODULE.parse_tide_station(json.dumps(value).encode(), "northsea_test_gauge", now)
+        value = json.loads(BSH_STATION)
+        value["id"] = "river_sperrwerk_binnenpegel"
+        value["properties"]["gauge_label"] = "Fluss-Sperrwerk, Binnenpegel"
+        with self.assertRaises(ValueError):
+            MODULE.parse_tide_station(json.dumps(value).encode(), "river_sperrwerk_binnenpegel", now)
 
     def test_bsh_curve_fallback_derives_future_high_and_low(self):
         now = dt.datetime(2026, 8, 20, 10, 0, tzinfo=dt.timezone.utc)

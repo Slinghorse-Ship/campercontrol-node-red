@@ -261,6 +261,15 @@ check(!/\b(?:Chart|Highcharts|Plotly|ECharts)\b/.test(dashboard), 'Wetterchart b
 check(dashboard.includes('this.s.weather') && dashboard.includes('hourly.slice(0,24)') && dashboard.includes('daily.slice(0,6)'), 'Wetterpanel liest genau 24 Stunden und sechs Tage aus state.weather');
 check(dashboardV2Markup.includes('<polyline v-if="v2WeatherTempPoints"') && dashboardV2Markup.includes('v-for="bar in v2WeatherRainBars"'), 'Wetterchart zeigt Temperaturkurve und Niederschlagswahrscheinlichkeit nativ als SVG');
 check(dashboardV2Markup.includes('Deutscher Wetterdienst (DWD)'), 'Wetterpanel zeigt die DWD-Attribution');
+check(dashboardV2Markup.includes('@change="v2SetLocation(\'weather\',$event.target.value)"')
+  && dashboardV2Markup.includes('@change="v2SetLocation(\'tide\',$event.target.value)"')
+  && dashboardV2Markup.includes('BSH-Nordseestation'), 'Node-RED bietet unabhängige Wetter- und Tideauswahl im gemeinsamen V2-Design');
+check(dashboard.includes("this.settingsPatch({weatherLocation:next})")
+  && dashboard.includes('if(raw.length>1024)return')
+  && dashboard.includes("sectionName!=='weather'&&sectionName!=='tide'"), 'Standortauswahl schreibt ausschließlich einen begrenzten validierten Settings-Patch');
+check(dashboard.includes("id:'10113'") && dashboard.includes("id:'wilhelmshaven_alter_vorhafen'")
+  && dashboard.includes("name:'GPS / automatisch'"), 'Node-RED nutzt dieselben benannten DWD-/BSH-Optionen und den GPS-Standard');
+check(!/id:'[^']*(?:binnenpegel|binnenschifffahrt|wehr_unterpegel)/i.test(dashboard), 'Node-RED bietet keine Binnengewässer- oder Binnenpegelstation an');
 const v2LightZoneOrder = [...((dashboard.match(/v2LightZones\(\)\{return\[(.*?)\]\}/) || [])[1] || '').matchAll(/key:'([^']+)'/g)].map(match => match[1]);
 check(JSON.stringify(v2LightZoneOrder) === JSON.stringify(['inside', 'rear', 'left', 'right']), 'Lichtmatrix ordnet oben Innen/Hinten und darunter Links/Rechts an');
 

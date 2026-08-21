@@ -95,6 +95,7 @@ TIDE_DISCOVERY_RADII_KM = (10.0, 25.0, TIDE_MAX_DISTANCE_KM)
 TIDE_DISCOVERY_PAGE_SIZE = 10
 TIDE_DISCOVERY_MAX_MATCHES = 48
 TIDE_STATION_REUSE_DISTANCE_KM = 10.0
+TIDE_INLAND_MARKERS = ("binnenpegel", "binnenwasser", "binnenschifffahrt", "wehr_unterpegel")
 # MOSMIX_L has four regular model runs per day. A six-hour success interval is
 # sufficient to pick up each run without redundant downloads on the Cerbo.
 REFRESH_SECONDS = 6 * 60 * 60
@@ -316,6 +317,13 @@ def _station_from_feature(feature: dict[str, Any]) -> TideStation | None:
     station_name = " ".join(str(properties.get("gauge_label") or "").split())
     region = str(properties.get("region") or "").strip().lower()
     licence = str(properties.get("licence") or "").strip().upper()
+    inland_text = " ".join(
+        (
+            station_id,
+            station_name,
+            str(properties.get("area") or ""),
+        )
+    ).lower().replace("-", "_").replace(" ", "_")
     coordinates = geometry.get("coordinates")
     if not isinstance(coordinates, list) or len(coordinates) < 2:
         return None
@@ -329,6 +337,7 @@ def _station_from_feature(feature: dict[str, Any]) -> TideStation | None:
         or not station_name
         or region != "north_sea"
         or TIDE_LICENSE not in licence
+        or any(marker in inland_text for marker in TIDE_INLAND_MARKERS)
         or not math.isfinite(latitude)
         or not math.isfinite(longitude)
         or not (-90 <= latitude <= 90 and -180 <= longitude <= 180)
