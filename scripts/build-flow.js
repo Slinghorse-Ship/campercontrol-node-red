@@ -221,6 +221,9 @@ if (own(source, 'tides') && source.tides != null) {
     const candidate = object(tideSource) ? {
         source: required(tideSource, 'source', value => value === 'BSH' ? value : undefined),
         attribution: required(tideSource, 'attribution', value => string(value, 256)),
+        license: required(tideSource, 'license', value => value === 'CC BY 4.0' ? value : undefined),
+        licenseUrl: required(tideSource, 'licenseUrl', value => value === 'https://creativecommons.org/licenses/by/4.0/' ? value : undefined),
+        changes: required(tideSource, 'changes', value => string(value, 256)),
         station: tideStation,
         updatedUtc: required(tideSource, 'updatedUtc', timestamp),
         stale: tideSource.stale,
@@ -232,7 +235,10 @@ if (own(source, 'tides') && source.tides != null) {
     if (tideCurveValid && validValues(candidate) && validValues(tideStation) && validValues(candidate.nextHigh) && validValues(candidate.nextLow) && typeof candidate.stale === 'boolean') tides = candidate;
 }
 const weather = {
-    schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)), station,
+    schema: 1, source: required(source, 'source', value => string(value, 128)), attribution: required(source, 'attribution', value => string(value, 256)),
+    license: required(source, 'license', value => value === 'CC BY 4.0' ? value : undefined),
+    licenseUrl: required(source, 'licenseUrl', value => value === 'https://creativecommons.org/licenses/by/4.0/' ? value : undefined),
+    changes: required(source, 'changes', value => string(value, 256)), station,
     modelRunUtc: required(source, 'modelRunUtc', value => timestamp(value, true)), fetchedAtUtc: required(source, 'fetchedAtUtc', timestamp), stale: source.stale,
     timezone: required(source, 'timezone', value => string(value, 64)), sun, hourly, daily
 };
@@ -1085,19 +1091,21 @@ if (state.func.includes('Number(victronSolar || 0) + Number(indevoltSolar || 0)'
   );
 }
 
-// Batterie-Details behalten bewusst den direkten SmartShunt-Messwert. Die
-// originale gui-v2-Kachel "DC Loads" liest davon getrennt
+// Batterie-Details verwenden wie gui-v2 Global.system.battery.power aus dem
+// zentralen SystemCalc-Dienst. Dadurch folgen GX, Node-RED und SYNC derselben
+// aktiven Systembatterie und hängen nicht an einer festen SmartShunt-Instanz.
+// Die originale gui-v2-Kachel "DC Loads" liest davon getrennt
 // com.victronenergy.system /Dc/System/Power (Global.system.dc.power). Fuer
-// denselben Wert wird das nicht vorhandene Abwasser-/Remaining-Eingangspaar
-// count-neutral wiederverwendet; dieses Fahrzeug besitzt keinen Abwassertank.
+// beide Werte werden zwei nicht benötigte Abwasser-Eingänge count-neutral
+// wiederverwendet; dieses Fahrzeug besitzt keinen Abwassertank.
 const batteryPowerInput = get('ec2c675c3d08f88c');
 Object.assign(batteryPowerInput, {
-  type: 'victron-input-battery',
-  service: 'com.victronenergy.battery/277',
-  path: '/Dc/0/Power',
-  serviceObj: { service: 'com.victronenergy.battery/277', name: 'SmartShunt 500A/50mV' },
-  pathObj: { path: '/Dc/0/Power', type: 'number', name: '/Dc/0/Power' },
-  name: 'SmartShunt Leistung'
+  type: 'victron-input-system',
+  service: 'com.victronenergy.system',
+  path: '/Dc/Battery/Power',
+  serviceObj: { service: 'com.victronenergy.system', name: 'Venus system' },
+  pathObj: { path: '/Dc/Battery/Power', type: 'number', name: '/Dc/Battery/Power' },
+  name: 'Victron Systembatterie-Leistung'
 });
 const dcSystemPowerInput = get('6b67bafd0f8833d1');
 Object.assign(dcSystemPowerInput, {

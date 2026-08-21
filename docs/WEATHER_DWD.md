@@ -12,8 +12,12 @@ den fertigen Zustand; sie kontaktieren weder DWD noch BSH selbst.
 - Station: nächster Eintrag des offiziellen MOSMIX-Stationskatalogs zum aktiven
   GX-GPS-Dienst (`/GpsService`, danach `/Position/Latitude` und
   `/Position/Longitude`)
-- Optionaler manueller Fallback: eine fünfstellige Stations-ID in
-  `/data/campercontrol/weather-station.conf`
+- Zentrale Standortwahl: `/data/campercontrol/weather-location.json` mit
+  getrennten `weather`- und `tide`-Einträgen (`mode:"gps"` oder
+  `mode:"station"` und jeweils validierte `stationId`)
+- Abwärtskompatibilität: Nur wenn die zentrale JSON-Datei nicht existiert,
+  wird eine fünfstellige DWD-ID aus
+  `/data/campercontrol/weather-station.conf` übernommen.
 - Cache: `/data/campercontrol/cache/weather-v1.json` (atomarer Austausch)
 - D-Bus/MQTT: `com.victronenergy.campercontrol`, Instanz 0,
   `/State/Weather` (nur lesbar)
@@ -70,11 +74,17 @@ Bundesamts für Seeschifffahrt und Hydrographie (BSH):
 Die API kennzeichnet die Region jedes Pegels direkt. Es werden ausschließlich
 Features mit `region:"north_sea"`, `licence:"CC BY 4.0"`, Punktgeometrie und
 zukünftigen HW-/NW-Daten ausgewählt; `baltic_sea` wird fail-closed verworfen.
-Der Cerbo sucht in wachsenden 10-/25-/60-km-Bounding-Boxes. Zuerst wird mit
+Im automatischen GPS-Modus sucht der Cerbo in wachsenden
+10-/25-/60-km-Bounding-Boxes. Zuerst wird mit
 `result-type=hitsOnly` nur die Trefferzahl gelesen, danach die kleinste
 nichtleere Box in Seiten von höchstens zehn Features. Mehr als 48 Treffer,
 mehr als 1,5 MiB pro Seite oder 4 MiB für die gesamte Auswahl brechen die
-Suche ab. Ab mehr als 60 km Entfernung fehlt `tides` vollständig.
+Suche ab. Die 60 km begrenzen ausschließlich diese automatische Nahsuche:
+Ohne GPS oder ohne passende Nordseestation lädt der Cerbo die validierte echte
+Nordseestation `wilhelmshaven_alter_vorhafen`. Eine vom Nutzer fest gewählte
+BSH-Nordseestation wird ebenfalls direkt geladen. Tide bleibt dadurch auch im
+Binnenland sichtbar; Binnenpegel und Nicht-Nordsee-Features werden nie als
+Ersatz verwendet.
 
 Der aktuelle GPS-Fix existiert nur im Arbeitsspeicher und in der daraus
 gebildeten BSH-Bounding-Box; er wird nie persistiert oder geloggt. Im atomaren
@@ -115,7 +125,8 @@ UTC in seine Gerätezeitzone.
 
 `/State/Weather` ist ein kompaktes JSON-Objekt (Schema 1):
 
-- `source`, `attribution`, `station`, `modelRunUtc`, `fetchedAtUtc`, `stale`
+- `source`, `attribution`, `license`, `licenseUrl`, `changes`, `station`,
+  `modelRunUtc`, `fetchedAtUtc`, `stale`
 - `timezone` und lokal berechnete `sun`-Zeiten (`riseUtc`, `setUtc`)
 - `hourly`: 48 Stunden mit `t`, `tempC`, `precipProbabilityPct`, `precipMm`,
   `ww`, `icon`, `windKmh`, `windDeg`, `gustKmh`
@@ -123,7 +134,8 @@ UTC in seine Gerätezeitzone.
   **maximaler stündlicher** Niederschlagswahrscheinlichkeit, Wettercode,
   Wind/Gust und Sonnenauf-/untergang
 - optional `tides`:
-  - `source:"BSH"`, `attribution`, `updatedUtc`, `stale`,
+  - `source:"BSH"`, `attribution`, `license`, `licenseUrl`, `changes`,
+    `updatedUtc`, `stale`,
     `referenceLevel:"PNP"`
   - `station:{id,name,distanceKm}`
   - `nextHigh:{t,heightM}` und `nextLow:{t,heightM}`; beide Zeiten sind UTC,
@@ -141,7 +153,7 @@ erfunden. `TTT` wird Kelvin → °C, Wind wird m/s → km/h umgerechnet.
 Node-RED validiert diesen Wert erneut (Schema 1, maximal 48 Stunden/sechs Tage
 und 16 KiB) und veröffentlicht ihn als `state.weather` für Dashboard und Ford
 SYNC. Dieser read-only Eingang ersetzt die zwei nicht verwendeten
-Abwasser-Nodes, sodass der Master bei 358 Nodes bleibt. Die D-Bus-Bridge lässt
+Abwasser-Nodes; der aktuelle Master umfasst 361 Nodes. Die D-Bus-Bridge lässt
 `weather` in `compact_state()` bewusst aus und verhindert damit Feedback.
 Sollte ein außergewöhnlich großer DWD-Snapshot zusammen mit den Gezeiten die
 16-KiB-Grenze erreichen, entfällt zuerst nur `tides.curve`, danach nötigenfalls
@@ -163,14 +175,25 @@ Stationsantwort wird sechs Stunden genutzt und danach mit ihrer gecachten
 HTTP-`ETag` bedingt abgefragt; ein unveränderter Stand liefert `304` ohne
 JSON-Payload. Nach 48 Stunden wird der Tide-Teil als `stale:true` markiert und
 nach sieben Tagen fail-closed entfernt. Bei Netzfehlern bleiben nur ein
-gültiger Cache derselben GPS-basiert ausgewählten Station und noch zukünftige
-Ereignisse nutzbar.
+gültiger Cache der tatsächlich ausgewählten oder fest konfigurierten Station
+und noch zukünftige Ereignisse nutzbar. Eine Entfernung über 60 km macht einen
+solchen Cache nicht ungültig; bei fester Auswahl wird ein Cache einer anderen
+Station ausnahmslos verworfen.
 
-Für einen manuellen Stationstest:
+Für einen Standorttest wird ausschließlich die zentrale Konfiguration über den
+vorhandenen Settings-Patch geändert. Beispiel für getrennte feste Stationen:
 
-1. fünfstellige ID in `/data/campercontrol/weather-station.conf` schreiben,
-2. den Dienst `campercontrol-dbus` neu starten,
-3. `/Status/WeatherError` und `/State/Weather` read-only prüfen.
+```json
+{
+  "schema": 1,
+  "weather": { "mode": "station", "stationId": "10384" },
+  "tide": { "mode": "station", "stationId": "wilhelmshaven_alter_vorhafen" }
+}
+```
+
+Anschließend werden `/Settings/WeatherLocation`, `/Status/WeatherError` und
+`/State/Weather` nur lesend geprüft. Die alte `weather-station.conf` ist kein
+neuer Schreibweg und dient ausschließlich der beschriebenen Migration.
 
 MOSMIX_L wird viermal täglich mit bis zu 240 Stunden Vorhersagezeitraum
 veröffentlicht. CamperControl fragt nach erfolgreichem Abruf nach sechs Stunden

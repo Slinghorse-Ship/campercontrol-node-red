@@ -91,6 +91,24 @@ const shellyAssertions = {
   flowPathMatches: shellyNode.path === '/SwitchableOutput/0/State'
 };
 
+// Die Batterieleistung muss wie in gui-v2 aus der aktiven, zentral vom Cerbo
+// berechneten Systembatterie kommen. Eine feste SmartShunt-Instanz wäre hier
+// falsch und könnte SYNC trotz vorhandener GX-Anzeige einen Nullwert liefern.
+const systemService = 'com.victronenergy.system';
+const systemBatteryPowerPath = '/Dc/Battery/Power';
+const systemBatteryPower = read(systemService, systemBatteryPowerPath);
+const systemBatteryPowerNode = byId.get('ec2c675c3d08f88c') || {};
+const batteryPowerTopicNode = byId.get('357fe2bdfa339671') || {};
+const batteryAssertions = {
+  systemServiceExists: Boolean(cache[systemService]),
+  systemBatteryPowerReadable: finite(systemBatteryPower),
+  flowUsesSystemService: systemBatteryPowerNode.type === 'victron-input-system'
+    && systemBatteryPowerNode.service === systemService,
+  flowUsesGxBatteryPowerPath: systemBatteryPowerNode.path === systemBatteryPowerPath,
+  syncSnapshotTopicPreserved: batteryPowerTopicNode.rules?.some(rule =>
+    rule.p === 'topic' && rule.to === 'battery.power') === true
+};
+
 const orionService = 'com.victronenergy.alternator/289';
 const orionNode = byId.get('orion_mode_out') || {};
 const orionModeInput = byId.get('orion_mode_in') || {};
@@ -146,7 +164,7 @@ const routingAssertions = {
   rearProducesOnlyCh11State: JSON.stringify(rearOutputIndexes) === JSON.stringify([10])
 };
 
-const groups = { wifi: wifiAssertions, ruuvi: ruuviAssertions, shelly: shellyAssertions, orion: orionAssertions, lights: lightAssertions, routing: routingAssertions };
+const groups = { wifi: wifiAssertions, ruuvi: ruuviAssertions, battery: batteryAssertions, shelly: shellyAssertions, orion: orionAssertions, lights: lightAssertions, routing: routingAssertions };
 const failures = Object.entries(groups).flatMap(([group, values]) =>
   Object.entries(values).filter(([, value]) => !bool(value)).map(([key]) => `${group}.${key}`));
 
@@ -155,6 +173,7 @@ console.log(JSON.stringify({
   liveReadOnly: true,
   wifi: { networkCount: networks.length, connectedSsid: connected?.ssid || '', state: wifi.external_wifi_state, signal: wifi.external_wifi_signal },
   ruuvi: { service: temperatureService, deviceName: temperatureValues.deviceName, temperature: temperatureValues.temperature, floorConfigured: false },
+  battery: { service: systemService, path: systemBatteryPowerPath, power: systemBatteryPower, snapshotTopic: 'battery.power' },
   shelly: { service: shellyService, powered: shellyPowered, state: shellyValue, expectedOfflineWithout230V: !shellyPowered },
   orion: { service: orionService, mode: read(orionService, '/Mode'), state: read(orionService, '/State'), voltage: read(orionService, '/Dc/0/Voltage') },
   lights: { warningPath: warningNode.path, rearPath: rearNode.path, stateOnly: lightAssertions.noWarningDimmingOutput },

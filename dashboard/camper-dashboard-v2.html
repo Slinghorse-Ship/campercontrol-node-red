@@ -1,4 +1,6 @@
 <section id="campercontrol-v2-horizon" :class="dayMode?'cc2-light':'cc2-dark'" @pointerdown="v2EdgeStart" @pointermove="v2EdgeMove" @pointerup="v2EdgeEnd" @pointercancel="v2EdgeCancel" @click.capture="v2GestureClickGuard">
+  <!-- Original CamperControl device drawings plus selected navigation symbols
+       adapted from Lucide; see NOTICE.md and LICENSE-LUCIDE.txt. -->
   <svg class="cc2-icon-library" aria-hidden="true"><defs>
     <symbol id="cc2-light-nav" viewBox="0 0 32 32"><circle cx="16" cy="16" r="5"></circle><path d="M16 3v6M16 23v6M3 16h6M23 16h6M6.8 6.8l4.2 4.2M21 21l4.2 4.2M25.2 6.8 21 11M11 21l-4.2 4.2"></path></symbol>
     <symbol id="cc2-light-cabin" viewBox="0 0 32 32"><path d="M6.5 14.5Q16 9 25.5 14.5L23 22q-7 3.2-14 0Z"></path><path d="M11 18h10M7 25h18M16 5v3"></path></symbol>
@@ -28,17 +30,18 @@
     <symbol id="cc2-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"></path><path d="M18 13v6H5V6h6"></path></symbol>
     <symbol id="cc2-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></symbol>
     <symbol id="cc2-status" viewBox="0 0 24 24"><path d="M4 18V8M10 18V4M16 18v-7M22 18V6"></path></symbol>
-    <symbol id="cc2-weather-clear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"></path></symbol>
-    <symbol id="cc2-weather-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 9.3 4.5 4.5 0 0 0 7 18Z"></path></symbol>
-    <symbol id="cc2-weather-unknown" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M9.7 9a2.5 2.5 0 0 1 4.8 1c0 1.8-2.5 2-2.5 4M12 18h.01"></path></symbol>
-    <symbol id="cc2-weather-partly" viewBox="0 0 24 24"><path d="M7 8a5 5 0 0 1 9.3-2.6M4 4l1.5 1.5M12 1v2M19 4l-1.5 1.5"></path><path d="M7 20h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 11.3 4.5 4.5 0 0 0 7 20Z"></path></symbol>
-    <symbol id="cc2-weather-rain" viewBox="0 0 24 24"><path d="M7 15h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 6.3 4.5 4.5 0 0 0 7 15Z"></path><path d="m8 18-1 3M13 18l-1 3M18 18l-1 3"></path></symbol>
-    <symbol id="cc2-weather-freezing-rain" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="m7 17-1 3m12-3-1 3M12 17v5m-2-2h4"></path></symbol>
-    <symbol id="cc2-weather-sleet" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="m7 17-1 3m11-3-1 3M12 17v5m-2-2h4"></path></symbol>
-    <symbol id="cc2-weather-snow" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="M8 18h.01M13 20h.01M18 18h.01"></path></symbol>
-    <symbol id="cc2-weather-storm" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><path d="m13 15-3 5h3l-1 3 4-6h-3l1-2"></path></symbol>
-    <symbol id="cc2-weather-hail" viewBox="0 0 24 24"><path d="M7 14h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 5.3 4.5 4.5 0 0 0 7 14Z"></path><circle cx="7" cy="19" r="1"></circle><circle cx="12" cy="21" r="1"></circle><circle cx="17" cy="19" r="1"></circle></symbol>
-    <symbol id="cc2-weather-fog" viewBox="0 0 24 24"><path d="M7 12h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.2 3.3 4.5 4.5 0 0 0 7 12Z"></path><path d="M3 16h18M5 20h14"></path></symbol>
+    <!-- These layered paths mirror CamperV2WeatherIcon.qml exactly. -->
+    <symbol id="cc2-weather-clear" viewBox="0 0 24 24"><g stroke="var(--cc2-weather-sun,#f4c94c)"><circle cx="12" cy="11.76" r="4.08"></circle><path d="M12 3.4v2.4M12 17.7v2.4M3.6 11.76H6M18 11.76h2.4M6.1 5.8l1.7 1.7M16.2 16.2l1.7 1.7M17.9 5.8l-1.7 1.7M7.8 16.2l-1.7 1.7"></path></g></symbol>
+    <symbol id="cc2-weather-cloud" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path></symbol>
+    <symbol id="cc2-weather-unknown" viewBox="0 0 24 24"><g stroke="var(--cc2-weather-line,currentColor)"><circle cx="12" cy="12" r="7.2"></circle><path d="M9.6 9.4a2.7 2.7 0 0 1 5.2 1c0 2-2.8 2.2-2.8 4.5M12 18h.01"></path></g></symbol>
+    <symbol id="cc2-weather-partly" viewBox="0 0 24 24"><g stroke="var(--cc2-weather-sun,#f4c94c)"><circle cx="16.32" cy="7.2" r="2.64"></circle><path d="M16.32 3.37v1.45M16.32 9.58v1.45M12.49 7.2h1.45M18.7 7.2h1.45M13.61 4.49l1.02 1.02M18.01 8.89l1.02 1.02M19.03 4.49l-1.02 1.02M14.63 8.89l-1.02 1.02"></path></g><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path></symbol>
+    <symbol id="cc2-weather-rain" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><path stroke="var(--cc2-weather-rain,#59caff)" d="M7.2 18l-1.2 3.12M12 18l-1.2 3.12M16.8 18l-1.2 3.12"></path></symbol>
+    <symbol id="cc2-weather-freezing-rain" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><path stroke="var(--cc2-weather-rain,#59caff)" d="M7.2 18l-1.2 3.12M12 18l-1.2 3.12M16.8 18l-1.2 3.12M10.08 21.84H12M11.04 20.88v1.92"></path></symbol>
+    <symbol id="cc2-weather-sleet" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><path stroke="var(--cc2-weather-rain,#59caff)" d="M7.68 18.48l-1.2 2.64M11.04 19.68h1.92M12 18.72v1.92M17.28 18.48l-1.2 2.64"></path></symbol>
+    <symbol id="cc2-weather-snow" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><path stroke="var(--cc2-weather-rain,#59caff)" d="M6.24 19.68h1.92M7.2 18.72v1.92M11.04 19.68h1.92M12 18.72v1.92M15.84 19.68h1.92M16.8 18.72v1.92"></path></symbol>
+    <symbol id="cc2-weather-storm" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><path stroke="var(--cc2-weather-sun,#f4c94c)" d="M12.48 16.56l-2.4 3.6h2.64l-1.92 2.88 3.84-5.04H12l.48-1.44"></path></symbol>
+    <symbol id="cc2-weather-hail" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08"></path><g stroke="var(--cc2-weather-rain,#59caff)"><circle cx="7.2" cy="19.92" r=".84"></circle><circle cx="12" cy="19.92" r=".84"></circle><circle cx="16.8" cy="19.92" r=".84"></circle></g></symbol>
+    <symbol id="cc2-weather-fog" viewBox="0 0 24 24"><path stroke="var(--cc2-weather-line,currentColor)" d="M4.56 15.36C1.92 14.64 2.16 10.32 5.76 9.84C6.72 5.28 12.96 4.32 15.36 8.64C20.16 8.16 22.08 13.92 18.72 16.08L5.28 16.08M4.8 18.24h14.4M6.72 21.12h10.56"></path></symbol>
   </defs></svg>
 
   <div class="cc2-device">
@@ -125,9 +128,9 @@
                 </div>
                 <svg class="cc2-photo-lamp-layer cc2-photo-light-layer--right" viewBox="0 0 560 360" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
                   <ellipse :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--inside',inside.on?'is-on':'']" cx="223" cy="164" rx="82" ry="70"></ellipse>
-                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--highbeam',highBeam.on?'is-on':'']" x1="263" y1="60" x2="403" y2="65"></line>
-                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--front',frontWhite.on?'is-on':'']" x1="263" y1="60" x2="403" y2="65"></line>
-                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--amber',frontAmber.on?'is-on':'']" x1="263" y1="60" x2="403" y2="65"></line>
+                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--highbeam',highBeam.on?'is-on':'']" x1="263" y1="36" x2="399" y2="41"></line>
+                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--front',frontWhite.on?'is-on':'']" x1="263" y1="36" x2="399" y2="41"></line>
+                  <line :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--amber',frontAmber.on?'is-on':'']" x1="263" y1="36" x2="399" y2="41"></line>
                   <rect :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--work',rightSide.on?'is-on':'']" x="63" y="41" width="16" height="7" rx="2"></rect><rect :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--work',rightSide.on?'is-on':'']" x="147" y="40" width="17" height="7" rx="2"></rect>
                   <rect :class="['cc2-vehicle-lamp','cc2-vehicle-lamp--rear',rear.on?'is-on':'']" x="43" y="5" width="14" height="14" rx="2"></rect>
                 </svg>
@@ -135,7 +138,7 @@
                   <button class="cc2-photo-hotspot" type="button" aria-label="Innenlicht schalten" :aria-pressed="inside.on" style="left:31.72%;top:32.2%;width:16.2%;height:26.8%" @click="v2ToggleZone('inside')"></button>
                   <button class="cc2-photo-hotspot" type="button" aria-label="Außenlicht rechts schalten" :aria-pressed="rightSide.on" style="left:7.78%;top:4.86%;width:9.8%;height:15%" @click="v2ToggleZone('right')"></button><button class="cc2-photo-hotspot" type="button" aria-label="Außenlicht rechts schalten" :aria-pressed="rightSide.on" style="left:22.87%;top:4.58%;width:9.8%;height:15%" @click="v2ToggleZone('right')"></button>
                   <button class="cc2-photo-hotspot" type="button" aria-label="Hecklicht schalten" :aria-pressed="rear.on" style="left:3.83%;top:0;width:10.2%;height:12.4%" @click="v2ToggleZone('rear')"></button>
-                  <button class="cc2-photo-hotspot" type="button" aria-label="Fernlicht am Dachbalken schalten" :aria-pressed="highBeam.manualOn" style="left:44.66%;top:10.17%;width:29.6%;height:14.4%" @click="v2ToggleZone('highbeam')"></button>
+                  <button class="cc2-photo-hotspot" type="button" aria-label="Fernlicht am Dachbalken schalten" :aria-pressed="highBeam.manualOn" style="left:40.9%;top:.6%;width:36.4%;height:20.2%" @click="v2ToggleZone('highbeam')"></button>
                 </div>
               </div>
               <div class="cc2-view-segments"><button :class="{ 'is-active':!rightView }" type="button" @click="rightView=false">Fahrerseite</button><button :class="{ 'is-active':rightView }" type="button" @click="rightView=true">Beifahrerseite</button></div>
@@ -192,7 +195,7 @@
         <section :class="['cc2-page',v2Page==='system'?'is-active':'']" data-page="system" aria-label="System">
           <div class="cc2-three-column">
             <article class="cc2-card cc2-feature-card"><h3>Verbindungen</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Victron-Daten</span><small>{{s.energy?.battery?.online?'Verbunden':'Getrennt'}}</small></button><button class="cc2-system-button" type="button"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Node-RED</span><small>{{s.system?.online?'Verbunden':'Getrennt'}}</small></button><button class="cc2-system-button" type="button" @click="go('/betrieb')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Geräte</span><small>{{v2DeviceStatus}}</small></button></div></article>
-            <article class="cc2-card cc2-feature-card"><h3>Camper</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-grid"></use></svg><span>Schnellzugriff</span></button><button class="cc2-system-button" type="button" @click="dayMode=!dayMode"><svg class="cc2-light-icon"><use href="#cc2-theme"></use></svg><span>Darstellung</span><small>{{dayMode?'Hell':'Dunkel'}}</small></button></div></article>
+            <article class="cc2-card cc2-feature-card cc2-location-card"><h3>Wetter und Tide</h3><div class="cc2-location-list"><label class="cc2-location-field"><span>Wetterstandort</span><select :value="v2WeatherLocationId" aria-label="DWD-Wetterstandort" @change="v2SetLocation('weather',$event.target.value)"><option v-for="station in v2WeatherStationOptions" :key="'weather-'+station.id" :value="station.id">{{station.name}}</option></select></label><label class="cc2-location-field"><span>Tidestation</span><select :value="v2TideLocationId" aria-label="BSH-Nordseestation" @change="v2SetLocation('tide',$event.target.value)"><option v-for="station in v2TideStationOptions" :key="'tide-'+station.id" :value="station.id">{{station.name}}</option></select></label><small>GPS ohne nahe Nordseestation nutzt Wilhelmshaven.</small><details class="cc2-data-license"><summary>Datenquellen &amp; Lizenzen</summary><div><p>Quelle: Deutscher Wetterdienst · CC BY 4.0 · Stationsauswahl, Normalisierung und Tagesaggregation</p><p>© Bundesamt für Seeschifffahrt und Hydrographie (BSH) · CC BY 4.0 · UTC/cm→m und Kurvenreduktion</p><p>CamperControl-Software · PolyForm Noncommercial 1.0.0</p></div></details></div></article>
             <article class="cc2-card cc2-feature-card"><h3>Victron</h3><div class="cc2-system-list"><button class="cc2-system-button" type="button" @click="openVictron"><svg class="cc2-light-icon"><use href="#cc2-external"></use></svg><span>Victron öffnen</span></button><button class="cc2-system-button" type="button" @click="go('/betrieb')"><svg class="cc2-light-icon"><use href="#cc2-status"></use></svg><span>Diagnose</span><small>{{(s.system?.alerts||[]).length}} Meldungen</small></button><button class="cc2-system-button" type="button" @click="go('/einstellungen')"><svg class="cc2-light-icon"><use href="#cc2-settings"></use></svg><span>Einstellungen</span></button></div></article>
           </div>
         </section>
@@ -211,27 +214,39 @@
         <div v-else class="cc2-favorite-editor" aria-label="Favoriten auswählen"><button v-for="option in v2FavoriteOptions" :key="option.id" type="button" :aria-pressed="v2FavoriteSelected(option.id)" :class="['cc2-favorite-option',v2FavoriteSelected(option.id)?'is-selected':'']" @click="v2ToggleFavoriteOption(option)"><span class="cc2-favorite-icon"><svg class="cc2-light-icon"><use :href="'#'+v2QuickIcon(option.icon)"></use></svg></span><span><strong>{{v2QuickName(option)}}</strong><small>{{option.group}}</small></span><b>{{v2FavoriteSelected(option.id)?'✓':'+'}}</b></button></div>
       </aside>
 
-      <aside id="cc2-weather-panel" :class="['cc2-edge-panel','cc2-weather-panel',v2Panel==='weather'?'is-open':'']" :aria-hidden="v2Panel!=='weather'" aria-label="DWD Wetter">
-        <header class="cc2-panel-header"><div><small>DWD · MOSMIX</small><h2>Wetter</h2></div><button class="cc2-panel-close" type="button" aria-label="Wetter schließen" @click="v2ClosePanel"><svg class="cc2-light-icon"><use href="#cc2-close"></use></svg></button></header>
-        <template v-if="v2Weather">
-          <div class="cc2-weather-summary"><span class="cc2-weather-icon" aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(v2WeatherHourly[0]?.icon)"></use></svg></span><div><strong>{{fmt(v2WeatherHourly[0]?.tempC,1)}}°</strong><small>{{v2WeatherStation}}</small></div><span :class="['cc2-weather-freshness',v2Weather.stale?'is-stale':'']">{{v2Weather.stale?'Veraltet':v2WeatherUpdated}}</span></div>
-          <div class="cc2-weather-chart" aria-label="Temperatur, Niederschlagswahrscheinlichkeit und optionale Tide der nächsten 24 Stunden">
-            <svg viewBox="0 0 400 150" role="img">
-              <line x1="28" y1="140" x2="372" y2="140" class="cc2-chart-axis"></line>
+      <aside id="cc2-weather-panel" :class="['cc2-edge-panel','cc2-weather-panel',v2Panel==='weather'?'is-open':'']" :aria-hidden="v2Panel!=='weather'" aria-label="DWD Wetter und BSH Tide">
+        <header class="cc2-panel-header cc2-weather-header"><svg class="cc2-light-icon cc2-weather-title-icon" aria-hidden="true"><use href="#cc2-climate"></use></svg><h2>Wetter</h2><button class="cc2-panel-close" type="button" aria-label="Wetter schließen" @click="v2ClosePanel"><svg class="cc2-light-icon"><use href="#cc2-close"></use></svg></button></header>
+        <div v-if="v2Weather" class="cc2-weather-content">
+          <article class="cc2-weather-card cc2-weather-current">
+            <span class="cc2-weather-source">DWD</span>
+            <svg class="cc2-light-icon cc2-weather-glyph cc2-weather-current-icon" aria-hidden="true"><use :href="'#'+v2WeatherIcon(v2WeatherCurrent?.icon)"></use></svg>
+            <strong class="cc2-weather-current-temp">{{fmt(v2WeatherCurrent?.tempC,1)}}°</strong>
+            <span class="cc2-weather-condition">{{v2WeatherDescription(v2WeatherCurrent)}}</span>
+            <span class="cc2-weather-rain-text">Regen {{fmt(v2WeatherCurrent?.precipProbabilityPct,0)}} %</span>
+            <span class="cc2-weather-wind">Wind {{fmt(v2WeatherCurrent?.windKmh,0)}} km/h</span>
+          </article>
+          <article class="cc2-weather-card cc2-weather-chart-card" aria-label="Temperatur, Niederschlagswahrscheinlichkeit und Tide der nächsten 24 Stunden">
+            <h3>Nächste 24 Stunden</h3>
+            <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur</span><span><i class="cc2-legend-rain"></i>Regen</span><span v-if="v2TidePoints"><i class="cc2-legend-tide"></i>Tide</span></div>
+            <svg class="cc2-weather-chart" viewBox="0 0 332 135" role="img">
+              <g class="cc2-chart-grid"><line v-for="line in v2WeatherGridLines" :key="line.key" x1="43" :y1="line.y" :x2="v2WeatherChartRight" :y2="line.y"></line></g>
               <rect v-for="bar in v2WeatherRainBars" :key="bar.key" :x="bar.x" :y="bar.y" :width="bar.width" :height="bar.height" class="cc2-chart-rain"></rect>
               <polyline v-if="v2WeatherTempPoints" :points="v2WeatherTempPoints" class="cc2-chart-temp"></polyline>
               <polyline v-if="v2TidePoints" :points="v2TidePoints" class="cc2-chart-tide"></polyline>
-              <g v-if="v2TemperatureScale" class="cc2-chart-temp-scale"><text x="3" y="31" text-anchor="start">{{v2TemperatureScale.max}}</text><text x="3" y="104" text-anchor="start">{{v2TemperatureScale.min}}</text></g>
-              <g v-if="v2TideScale" class="cc2-chart-tide-scale"><text x="390" y="59" text-anchor="end">{{v2TideScale.max}}</text><text x="390" y="136" text-anchor="end">{{v2TideScale.min}}</text></g>
-              <g v-for="label in v2WeatherChartLabels" :key="label.key"><text :x="label.x" y="148" text-anchor="middle">{{label.hour}}</text></g>
+              <g v-if="v2TemperatureScale" class="cc2-chart-temp-scale"><text x="3" y="19">{{v2TemperatureScale.max}}</text><text x="3" y="84">{{v2TemperatureScale.min}}</text></g>
+              <g v-if="v2TideScale" class="cc2-chart-tide-scale"><text :x="v2WeatherChartRight+3" y="19">{{v2TideScale.max}}</text><text :x="v2WeatherChartRight+3" y="84">{{v2TideScale.min}}</text></g>
+              <g v-for="label in v2WeatherChartLabels" :key="label.key"><text :x="label.x" y="128" text-anchor="middle">{{label.hour}}</text></g>
             </svg>
-            <div class="cc2-weather-legend"><span><i class="cc2-legend-temp"></i>Temperatur <b v-if="v2TemperatureScale">{{v2TemperatureScale.min}} bis {{v2TemperatureScale.max}}</b></span><span><i class="cc2-legend-rain"></i>Regenrisiko</span><span v-if="v2TidePoints"><i class="cc2-legend-tide"></i>Tide</span></div>
-          </div>
-          <div class="cc2-weather-days"><article v-for="day in v2WeatherDaily" :key="day.date" class="cc2-weather-day"><small>{{v2WeatherDay(day.date)}}</small><span aria-hidden="true"><svg class="cc2-light-icon"><use :href="'#'+v2WeatherIcon(day.icon)"></use></svg></span><strong>{{fmt(day.maxC,0)}}°</strong><em>{{fmt(day.minC,0)}}°</em><b>{{fmt(day.maxHourlyPrecipProbabilityPct,0)}} %</b></article></div>
-          <div v-if="v2SunText||v2TideText" class="cc2-weather-sun-tide"><span v-if="v2SunText">{{v2SunText}}</span><span v-if="v2TideText" :class="v2Tides&&v2Tides.stale?'is-stale':''">{{v2TideText}}</span></div>
-          <footer class="cc2-weather-footer"><span>{{v2Weather.attribution||'Quelle: Deutscher Wetterdienst (DWD)'}}{{v2Tides?' · Tide: '+v2Tides.attribution:''}}</span><span>{{v2Weather.modelRunUtc?'Modell '+v2WeatherTime(v2Weather.modelRunUtc):''}}</span></footer>
-        </template>
-        <div v-else class="cc2-weather-empty"><svg class="cc2-light-icon" aria-hidden="true"><use href="#cc2-weather-cloud"></use></svg><strong>Wetter noch nicht verfügbar</strong><small>Der Cerbo lädt die DWD-Vorhersage zentral und stellt den letzten Cache bereit.</small></div>
+          </article>
+          <article class="cc2-weather-card cc2-weather-forecast">
+            <h3>6-Tage-Vorschau</h3>
+            <div class="cc2-weather-days"><article v-for="day in v2WeatherDaily" :key="day.date" class="cc2-weather-day"><small>{{v2WeatherDay(day.date)}}</small><svg class="cc2-light-icon cc2-weather-glyph" aria-hidden="true"><use :href="'#'+v2WeatherIcon(day.icon)"></use></svg><strong>{{fmt(day.minC,0)}}°  {{fmt(day.maxC,0)}}°</strong><b>{{fmt(day.maxHourlyPrecipProbabilityPct,0)}} %</b></article></div>
+            <span v-if="!v2WeatherDaily.length" class="cc2-weather-no-days">Noch keine Tagesprognose</span>
+          </article>
+          <div v-if="v2SunText||v2TideText" :class="['cc2-weather-sun-tide',v2Tides&&v2Tides.stale?'is-stale':'']">{{[v2SunText,v2TideText].filter(Boolean).join('   ·   ')}}</div>
+          <footer :class="['cc2-weather-footer',v2Weather.stale?'is-stale':'']">Quelle: Deutscher Wetterdienst · {{v2WeatherStation}}{{v2WeatherUpdated?' · '+v2WeatherUpdated:''}}{{v2Weather.stale?' · Daten veraltet':''}}</footer>
+        </div>
+        <div v-else class="cc2-weather-empty"><svg class="cc2-light-icon cc2-weather-glyph" aria-hidden="true"><use href="#cc2-weather-cloud"></use></svg><strong>Wetter noch nicht verfügbar</strong><small>Der Cerbo lädt die DWD-Vorhersage zentral und stellt den letzten Cache bereit.</small></div>
       </aside>
     </div>
   </div>

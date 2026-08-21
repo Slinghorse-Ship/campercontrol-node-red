@@ -34,9 +34,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SOURCE_NAME = "DWD MOSMIX_L"
 SOURCE_ATTRIBUTION = "Quelle: Deutscher Wetterdienst"
+DATA_LICENSE = "CC BY 4.0"
+DATA_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
+SOURCE_CHANGES = "Stationsauswahl, Normalisierung und Tagesaggregation durch CamperControl"
 TIDE_SOURCE_NAME = "BSH"
 TIDE_ATTRIBUTION = "© Bundesamt für Seeschifffahrt und Hydrographie (BSH)"
 TIDE_LICENSE = "CC BY 4.0"
+TIDE_CHANGES = "Nordseestationsauswahl, UTC-Normalisierung, cm→m und Kurvenreduktion durch CamperControl"
 SCHEMA_VERSION = 1
 STATION_CATALOG_URLS = (
     "https://www.dwd.de/DE/leistungen/met_verfahren_mosmix/"
@@ -95,6 +99,7 @@ TIDE_DISCOVERY_RADII_KM = (10.0, 25.0, TIDE_MAX_DISTANCE_KM)
 TIDE_DISCOVERY_PAGE_SIZE = 10
 TIDE_DISCOVERY_MAX_MATCHES = 48
 TIDE_STATION_REUSE_DISTANCE_KM = 10.0
+TIDE_INLAND_MARKERS = ("binnenpegel", "binnenwasser", "binnenschifffahrt", "wehr_unterpegel")
 # MOSMIX_L has four regular model runs per day. A six-hour success interval is
 # sufficient to pick up each run without redundant downloads on the Cerbo.
 REFRESH_SECONDS = 6 * 60 * 60
@@ -316,6 +321,13 @@ def _station_from_feature(feature: dict[str, Any]) -> TideStation | None:
     station_name = " ".join(str(properties.get("gauge_label") or "").split())
     region = str(properties.get("region") or "").strip().lower()
     licence = str(properties.get("licence") or "").strip().upper()
+    inland_text = " ".join(
+        (
+            station_id,
+            station_name,
+            str(properties.get("area") or ""),
+        )
+    ).lower().replace("-", "_").replace(" ", "_")
     coordinates = geometry.get("coordinates")
     if not isinstance(coordinates, list) or len(coordinates) < 2:
         return None
@@ -329,6 +341,7 @@ def _station_from_feature(feature: dict[str, Any]) -> TideStation | None:
         or not station_name
         or region != "north_sea"
         or TIDE_LICENSE not in licence
+        or any(marker in inland_text for marker in TIDE_INLAND_MARKERS)
         or not math.isfinite(latitude)
         or not math.isfinite(longitude)
         or not (-90 <= latitude <= 90 and -180 <= longitude <= 180)
@@ -951,6 +964,9 @@ def build_snapshot(
         "schema": SCHEMA_VERSION,
         "source": SOURCE_NAME,
         "attribution": SOURCE_ATTRIBUTION,
+        "license": DATA_LICENSE,
+        "licenseUrl": DATA_LICENSE_URL,
+        "changes": SOURCE_CHANGES,
         "station": {
             "id": station.station_id,
             "name": station_name or station.name,
@@ -976,6 +992,16 @@ def build_snapshot(
 
 def mark_stale(snapshot: dict[str, Any], now: dt.datetime | None = None) -> dict[str, Any]:
     copy = json.loads(json.dumps(snapshot))
+    # Enrich schema-1 caches created before the explicit CC-BY fields were
+    # added. This keeps a valid offline cache usable without weakening the
+    # transport contract or changing any weather measurements.
+    copy["license"] = DATA_LICENSE
+    copy["licenseUrl"] = DATA_LICENSE_URL
+    copy["changes"] = SOURCE_CHANGES
+    if isinstance(copy.get("tides"), dict):
+        copy["tides"]["license"] = TIDE_LICENSE
+        copy["tides"]["licenseUrl"] = DATA_LICENSE_URL
+        copy["tides"]["changes"] = TIDE_CHANGES
     fetched = parse_time(copy.get("fetchedAtUtc"))
     current = (now or utc_now()).astimezone(dt.timezone.utc)
     copy["stale"] = fetched is None or (current - fetched).total_seconds() >= STALE_AFTER_SECONDS
@@ -1169,6 +1195,9 @@ def _valid_tide_cache(
     result = {
         "source": TIDE_SOURCE_NAME,
         "attribution": TIDE_ATTRIBUTION,
+        "license": TIDE_LICENSE,
+        "licenseUrl": DATA_LICENSE_URL,
+        "changes": TIDE_CHANGES,
         "station": {
             "id": station_id,
             "name": station_name,

@@ -38,6 +38,93 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
 `/?page=energy&pane=solar-detail`. Mit `--cerbo http://172.24.24.1:1880` und
 `--port 4175` lassen sich Quelle und Port explizit setzen.
 
+## Interaktive Galerie
+
+Die Screenshots stammen aus der ausschließlich lesenden lokalen 800×480-
+Browserabnahme des aktuellen Flow-Masters. Jeder Bereich ist in Nacht- und
+Tagmodus dokumentiert; die Lichtbilder zeigen den Balken zur Lageprüfung
+eingeschaltet.
+
+<details open>
+<summary><strong>Home</strong></summary>
+
+![Node-RED Home](docs/camper/screens/v2-home-night.png)
+
+![Node-RED Home im Tagmodus](docs/camper/screens/v2-home-day.png)
+
+</details>
+
+<details>
+<summary><strong>Licht – Fahrer- und Beifahrerseite</strong></summary>
+
+![Node-RED Licht Fahrerseite](docs/camper/screens/v2-lights-driver-night.png)
+
+![Node-RED Licht Beifahrerseite](docs/camper/screens/v2-lights-passenger-night.png)
+
+![Node-RED Licht Fahrerseite im Tagmodus](docs/camper/screens/v2-lights-driver-day.png)
+
+![Node-RED Licht Beifahrerseite im Tagmodus](docs/camper/screens/v2-lights-passenger-day.png)
+
+</details>
+
+<details>
+<summary><strong>Klima</strong></summary>
+
+![Node-RED Klima](docs/camper/screens/v2-climate-night.png)
+
+![Node-RED Klima im Tagmodus](docs/camper/screens/v2-climate-day.png)
+
+</details>
+
+<details>
+<summary><strong>Energie – Verbraucher und Quellen</strong></summary>
+
+![Node-RED Energie](docs/camper/screens/v2-energy-power-night.png)
+
+![Node-RED Energiequellen](docs/camper/screens/v2-energy-sources-night.png)
+
+![Node-RED Energie im Tagmodus](docs/camper/screens/v2-energy-power-day.png)
+
+![Node-RED Energiequellen im Tagmodus](docs/camper/screens/v2-energy-sources-day.png)
+
+</details>
+
+<details>
+<summary><strong>Wasser</strong></summary>
+
+![Node-RED Wasser](docs/camper/screens/v2-water-night.png)
+
+![Node-RED Wasser im Tagmodus](docs/camper/screens/v2-water-day.png)
+
+</details>
+
+<details>
+<summary><strong>System</strong></summary>
+
+![Node-RED System](docs/camper/screens/v2-system-night.png)
+
+![Node-RED System im Tagmodus](docs/camper/screens/v2-system-day.png)
+
+</details>
+
+<details>
+<summary><strong>Favoritenpanel</strong></summary>
+
+![Node-RED Favoriten](docs/camper/screens/v2-favorites-night.png)
+
+![Node-RED Favoriten im Tagmodus](docs/camper/screens/v2-favorites-day.png)
+
+</details>
+
+<details>
+<summary><strong>Wetter- und Tidepanel</strong></summary>
+
+![Node-RED Wetter und Tide](docs/camper/screens/v2-weather-night.png)
+
+![Node-RED Wetter und Tide im Tagmodus](docs/camper/screens/v2-weather-day.png)
+
+</details>
+
 ## Regeln
 
 - Keine Passwörter, WLAN-Schlüssel, API-Tokens oder SSH-Zugangsdaten committen.
@@ -115,10 +202,12 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   und nicht bestätigte Schalter sind deaktiviert.
 - Die Home-Kachel `DC-Verbrauch` folgt wie das originale Victron-Widget
   `Global.system.dc.power` exakt dem SystemCalc-Pfad
-  `com.victronenergy.system /Dc/System/Power`. Der direkte SmartShunt-Wert
-  bleibt getrennt als `energy.battery.power` erhalten und zeigt am SOC-Ring mit
-  Richtung und Leistung, ob die Batterie lädt, entlädt oder sich innerhalb der
-  5-W-Ruhezone befindet. Die daneben klar beschriftete Restlaufzeit kommt direkt
+  `com.victronenergy.system /Dc/System/Power`. Die Batterieleistung folgt wie
+  GX `Global.system.battery.power` aus
+  `com.victronenergy.system /Dc/Battery/Power`, wird als
+  `energy.battery.power` an Node-RED und SYNC verteilt und zeigt am SOC-Ring mit
+  Richtung und Leistung, ob die aktive Systembatterie lädt, entlädt oder sich
+  innerhalb der 5-W-Ruhezone befindet. Die daneben klar beschriftete Restlaufzeit kommt direkt
   aus `energy.battery.timeToGoSeconds`: ab 24 Stunden als Tage, darunter als
   Stunden; beim Laden steht `Lädt`, bei fehlender SmartShunt-Prognose `–`.
   `Solar gesamt` ist ausschließlich `com.victronenergy.system /Dc/Pv/Power`;
@@ -153,3 +242,12 @@ und sendet keine Gerätebefehle. Direkte Abnahme-URLs sind beispielsweise
   Nicht-Licht-Aktionen wie Wasserpumpe, 230 V, Autoterm oder MaxxFan bleiben
   erhalten und der zentrale Router prüft die gesamte Szene vor dem ersten
   Ausgang atomar.
+
+## Lizenz
+
+Der originale CamperControl-Code dieses Repositories steht unter der
+[PolyForm Noncommercial License 1.0.0](LICENSE.md). Kommerzielle Nutzung ist
+nicht erlaubt. Drittkomponenten sowie DWD-/BSH-Daten behalten ihre jeweiligen
+Rechte und Attributionspflichten; Einzelheiten stehen in [NOTICE.md](NOTICE.md)
+und [DATA-LICENSES.md](DATA-LICENSES.md). Aus Lucide abgeleitete
+Navigationssymbole behalten ihre [ISC-/MIT-Lizenz](LICENSE-LUCIDE.txt).
