@@ -171,7 +171,7 @@ check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.n
 check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
-check(flows.length === 361, 'Master bleibt exakt der validierte 361-Node-Flow');
+check(flows.length === 362, 'Master bleibt exakt der validierte 362-Node-Flow');
 check(packageJson.version === '4.5.0', 'Releaseversion ist 4.5.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');

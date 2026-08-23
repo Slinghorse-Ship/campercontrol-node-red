@@ -10,6 +10,7 @@ holds more than the fixed header/body limits below.
 from __future__ import annotations
 
 import ipaddress
+import base64
 import json
 import socket
 import sys
@@ -159,6 +160,7 @@ def bounded_http_request(
     method: str,
     path: str,
     *,
+    body: bytes = b"",
     timeout: float = SOCKET_TIMEOUT_SECONDS,
 ) -> Response:
     host_header = host if port == 80 else f"{host}:{port}"
@@ -167,9 +169,10 @@ def bounded_http_request(
         f"Host: {host_header}\r\n"
         "Accept: application/json\r\n"
         "Connection: close\r\n"
-        "Content-Length: 0\r\n"
+        + ("Content-Type: application/json\r\n" if body else "")
+        + f"Content-Length: {len(body)}\r\n"
         "\r\n"
-    ).encode("ascii")
+    ).encode("ascii") + body
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.settimeout(timeout)
         connection.sendall(request)
@@ -211,23 +214,52 @@ def _rfc1918_address(raw: str) -> str:
     return str(address)
 
 
-def _target(arguments: list[str]) -> tuple[str, int, str, str]:
+def _vanturtle_post_body(encoded: str) -> bytes:
+    if not encoded or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in encoded):
+        raise ValueError("invalid VanTurtle command encoding")
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        command = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid VanTurtle command") from error
+    if not isinstance(command, dict) or not command:
+        raise ValueError("VanTurtle command must be a non-empty object")
+    if set(command) - {"active", "speed", "direction", "auto_hold"}:
+        raise ValueError("unsupported VanTurtle command field")
+    if "active" in command and not isinstance(command["active"], bool):
+        raise ValueError("active must be boolean")
+    if "speed" in command and (
+        isinstance(command["speed"], bool)
+        or not isinstance(command["speed"], int)
+        or not 1 <= command["speed"] <= 10
+    ):
+        raise ValueError("speed must be an integer from 1 to 10")
+    if "direction" in command and command["direction"] != 1:
+        raise ValueError("direction must use the documented toggle value")
+    if "auto_hold" in command and not isinstance(command["auto_hold"], bool):
+        raise ValueError("auto_hold must be boolean")
+    return json.dumps(command, separators=(",", ":")).encode("utf-8")
+
+
+def _target(arguments: list[str]) -> tuple[str, int, str, str, bytes]:
     if len(arguments) == 1 and arguments[0] == "vanturtle":
-        return "vanturtle-fan.local", 80, "GET", "/state"
+        return "vanturtle-fan.local", 80, "GET", "/state", b""
+    if len(arguments) == 2 and arguments[0] == "vanturtle-post":
+        return "vanturtle-fan.local", 80, "POST", "/state", _vanturtle_post_body(arguments[1])
     if len(arguments) == 2 and arguments[0] == "indevolt":
         address = _rfc1918_address(arguments[1])
         points = [0, 7101, 6001, 6002, 6000, 1501, 1664, 1665, 2101, 2108]
         query = urllib.parse.urlencode(
             {"config": json.dumps({"t": points}, separators=(",", ":"))}
         )
-        return address, 8080, "POST", f"/rpc/Indevolt.GetData?{query}"
-    raise ValueError("usage: device-http-bounded.py vanturtle | indevolt RFC1918_IP")
+        return address, 8080, "POST", f"/rpc/Indevolt.GetData?{query}", b""
+    raise ValueError("usage: device-http-bounded.py vanturtle | vanturtle-post BASE64URL_JSON | indevolt RFC1918_IP")
 
 
 def main(arguments: list[str]) -> int:
     try:
-        host, port, method, path = _target(arguments)
-        response = bounded_http_request(host, port, method, path)
+        host, port, method, path, body = _target(arguments)
+        response = bounded_http_request(host, port, method, path, body=body)
         if response.status < 200 or response.status >= 300:
             print(f"device-http: HTTP {response.status}", file=sys.stderr)
             return 70
