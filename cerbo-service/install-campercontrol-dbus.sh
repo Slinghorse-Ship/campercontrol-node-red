@@ -5,6 +5,7 @@ BASE=/data/campercontrol/service
 RC_LOCAL=/data/rc.local
 START_LINE=/data/campercontrol/service/ensure-campercontrol-dbus.sh
 SERVICE_LINK=/service/campercontrol-dbus
+DISCOVERY_SERVICE_LINK=/service/vanturtle-discovery
 TEMP=/data/rc.local.camper-dbus.$$
 
 trap 'rm -f "$TEMP"' 0 HUP INT TERM
@@ -13,12 +14,16 @@ trap 'rm -f "$TEMP"' 0 HUP INT TERM
 [ -f "$BASE/campercontrol_weather.py" ] || exit 1
 [ -f "$BASE/device-http-bounded.py" ] || exit 1
 [ -f "$BASE/campercontrol-dbus-service/run" ] || exit 1
+[ -f "$BASE/vanturtle-discovery.py" ] || exit 1
+[ -f "$BASE/vanturtle-discovery-service/run" ] || exit 1
 [ -f "$START_LINE" ] || exit 1
 
 chmod 0755 "$BASE/campercontrol-dbus.py"
 chmod 0644 "$BASE/campercontrol_weather.py"
 chmod 0755 "$BASE/device-http-bounded.py"
 chmod 0755 "$BASE/campercontrol-dbus-service/run"
+chmod 0755 "$BASE/vanturtle-discovery.py"
+chmod 0755 "$BASE/vanturtle-discovery-service/run"
 chmod 0755 "$START_LINE"
 
 if [ ! -f "$RC_LOCAL" ]; then
@@ -40,6 +45,10 @@ service_was_up=0
 if [ -L "$SERVICE_LINK" ] && svstat "$SERVICE_LINK" 2>/dev/null | grep -q ': up '; then
     service_was_up=1
 fi
+discovery_was_up=0
+if [ -L "$DISCOVERY_SERVICE_LINK" ] && svstat "$DISCOVERY_SERVICE_LINK" 2>/dev/null | grep -q ': up '; then
+    discovery_was_up=1
+fi
 
 "$START_LINE"
 # `svc -u` in the idempotent ensure script starts a stopped/first-install
@@ -49,5 +58,10 @@ if [ "$service_was_up" -eq 1 ]; then
     svc -t "$SERVICE_LINK" >/dev/null 2>&1 || true
 else
     svc -u "$SERVICE_LINK" >/dev/null 2>&1 || true
+fi
+if [ "$discovery_was_up" -eq 1 ]; then
+    svc -t "$DISCOVERY_SERVICE_LINK" >/dev/null 2>&1 || true
+else
+    svc -u "$DISCOVERY_SERVICE_LINK" >/dev/null 2>&1 || true
 fi
 exit 0

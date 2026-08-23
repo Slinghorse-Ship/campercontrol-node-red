@@ -133,6 +133,16 @@ class CamperControlDbusContractTest(unittest.TestCase):
         self.assertIn('DEVICE_HTTP=/data/campercontrol/service/device-http-bounded.py', ensure)
         self.assertIn('[ -x "$DEVICE_HTTP" ] || exit 1', ensure)
 
+    def test_install_and_ensure_manage_vanturtle_discovery_service(self):
+        installer = INSTALLER_PATH.read_text(encoding="utf-8")
+        ensure = ENSURE_PATH.read_text(encoding="utf-8")
+        self.assertIn('[ -f "$BASE/vanturtle-discovery.py" ] || exit 1', installer)
+        self.assertIn('chmod 0755 "$BASE/vanturtle-discovery.py"', installer)
+        self.assertIn('DISCOVERY_SERVICE_LINK=/service/vanturtle-discovery', installer)
+        self.assertIn('VANTURTLE_DISCOVERY=/data/campercontrol/service/vanturtle-discovery.py', ensure)
+        self.assertIn('ensure_service_link "$DISCOVERY_SERVICE_LINK" "$DISCOVERY_SERVICE_DIR"', ensure)
+        self.assertIn('svc -u "$DISCOVERY_SERVICE_LINK"', ensure)
+
     def test_maintenance_logs_are_overwritten_on_every_invocation(self):
         for script_path in LOG_SCRIPT_PATHS:
             with self.subTest(script=script_path.name):

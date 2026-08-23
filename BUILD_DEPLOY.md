@@ -204,6 +204,8 @@ cerbo-service/prefer-lan.sh
 cerbo-service/starlink-read-status.sh
 cerbo-service/status.sh
 cerbo-service/sudoers-campercontrol
+cerbo-service/vanturtle-discovery.py
+cerbo-service/vanturtle-discovery-service/run
 cerbo-service/wifi-connect-connman.py
 cerbo-service/wifi-connect-http-service/run
 ```
