@@ -12,15 +12,16 @@ const publicPath = path.join(root, 'dist', 'CamperControl_NodeRED.json');
 fs.mkdirSync(path.dirname(publicPath), { recursive: true });
 const tabId = 'b7be72c8b69bf30e';
 const dashboardId = 'dec0785f657dc7d1';
+const normalizeNewlines = value => value.replace(/\r\n?/g, '\n');
 
 let flows = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
+const dashboardTemplate = normalizeNewlines(fs.readFileSync(dashboardPath, 'utf8'));
 const transitDataUri = filePath => `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`;
 const injectTransitAssets = source => source
   .replace('__CC2_TRANSIT_DARK_DATA_URI__', transitDataUri(transitDarkPath))
   .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', transitDataUri(transitLightPath));
-const dashboardV2Markup = injectTransitAssets(fs.readFileSync(dashboardV2MarkupPath, 'utf8')).trim();
-const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const dashboardV2Markup = injectTransitAssets(normalizeNewlines(fs.readFileSync(dashboardV2MarkupPath, 'utf8'))).trim();
+const dashboardV2Css = normalizeNewlines(fs.readFileSync(dashboardV2CssPath, 'utf8')).trim();
 const composeDashboard = () => {
   const markupToken = '<!-- CAMPERCONTROL_V2_MARKUP -->';
   const cssToken = '/* CAMPERCONTROL_V2_CSS */';
@@ -307,10 +308,9 @@ add({
   x: 1340, y: 3460, wires: []
 });
 
-// Ruuvi wird nicht gesucht. Der vorhandene Sensor FB31 ist fest und nativ dem
-// Victron-Temperaturdienst /24 als Deckenfühler zugeordnet. Ein Bodenfühler
-// bleibt bis zu seiner ausdrücklichen Service-Zuordnung offline; dadurch kann
-// sich die Rollenverteilung nach Neustarts oder neuen Bluetooth-Geräten nie
+// Ruuvi wird nicht gesucht. FB31 und B7B8 sind fest und nativ den Victron-
+// Temperaturdiensten /24 (Decke) und /25 (Boden) zugeordnet. Dadurch kann sich
+// die Rollenverteilung nach Neustarts oder neuen Bluetooth-Geräten nie
 // selbständig ändern.
 const ruuviLegacyIds = [
   'camper_ruuvi_discovery_tick', 'camper_ruuvi_discovery_exec',
@@ -322,23 +322,31 @@ const ruuviLegacyIds = [
   'ruuvi_ceiling_batteryVoltage_in', 'ruuvi_ceiling_batteryVoltage_topic',
   'ruuvi_ceiling_name_in', 'ruuvi_ceiling_name_topic',
   'ruuvi_ceiling_deviceName_in', 'ruuvi_ceiling_deviceName_topic',
+  'ruuvi_floor_temperature_in', 'ruuvi_floor_temperature_topic',
+  'ruuvi_floor_humidity_in', 'ruuvi_floor_humidity_topic',
+  'ruuvi_floor_pressure_in', 'ruuvi_floor_pressure_topic',
+  'ruuvi_floor_battery_in', 'ruuvi_floor_battery_topic',
+  'ruuvi_floor_batteryVoltage_in', 'ruuvi_floor_batteryVoltage_topic',
+  'ruuvi_floor_name_in', 'ruuvi_floor_name_topic',
+  'ruuvi_floor_deviceName_in', 'ruuvi_floor_deviceName_topic',
   'ruuvi_manual_adapter', 'ruuvi_manual_note'
 ];
 removeIds(ruuviLegacyIds);
-const ruuviService = 'com.victronenergy.temperature/24';
-const ruuviInput = (id, name, pathValue, type, y, topicId) => ({
+const ruuviInput = (id, name, service, serviceName, pathValue, type, y, topicId) => ({
   id,
   // Der eigentliche Temperaturwert nutzt den offiziellen spezialisierten
   // Victron-Knoten; Zusatzwerte benötigen die freie Pfadauswahl des Custom-
   // Eingangs, bleiben aber auf demselben fest ausgewählten Venus-Dienst.
   type: pathValue === '/Temperature' ? 'victron-input-temperature' : 'victron-input-custom',
   z: tabId,
-  service: ruuviService,
+  service,
   path: pathValue,
-  serviceObj: { service: ruuviService, name: 'Ruuvi FB31 · Decke' },
+  serviceObj: { service, name: serviceName },
   pathObj: { path: pathValue, type, name: pathValue },
   name,
-  onlyChanges: true,
+  // Temperatur muss auch bei unverändertem Messwert regelmäßig ankommen,
+  // damit ein ruhiger Raum nicht fälschlich als Sensorausfall gilt.
+  onlyChanges: pathValue !== '/Temperature',
   roundValues: '3',
   x: 245,
   y,
@@ -359,72 +367,138 @@ const ruuviTopic = (id, topic, y) => ({
   wires: [['ruuvi_manual_adapter']]
 });
 const ruuviFields = [
-  ['temperature', '/Temperature', 'number', 8650],
-  ['humidity', '/Humidity', 'number', 8695],
-  ['pressure', '/Pressure', 'number', 8740],
-  ['batteryVoltage', '/BatteryVoltage', 'number', 8785],
-  ['deviceName', '/DeviceName', 'string', 8830]
+  ['temperature', '/Temperature', 'number', 0],
+  ['humidity', '/Humidity', 'number', 45],
+  ['pressure', '/Pressure', 'number', 90],
+  ['batteryVoltage', '/BatteryVoltage', 'number', 135],
+  ['deviceName', '/DeviceName', 'string', 180]
 ];
-for (const [field, pathValue, type, y] of ruuviFields) {
-  add(ruuviInput(`ruuvi_ceiling_${field}_in`, `Ruuvi FB31 Decke · ${pathValue}`, pathValue, type, y, `ruuvi_ceiling_${field}_topic`));
-  add(ruuviTopic(`ruuvi_ceiling_${field}_topic`, `ruuvi.ceiling.${field}`, y));
+const ruuviRoles = [
+  { key: 'ceiling', service: 'com.victronenergy.temperature/24', deviceName: 'Ruuvi FB31', label: 'Decke', y: 8650 },
+  { key: 'floor', service: 'com.victronenergy.temperature/25', deviceName: 'Ruuvi B7B8', label: 'Boden', y: 8890 }
+];
+for (const role of ruuviRoles) {
+  for (const [field, pathValue, type, yOffset] of ruuviFields) {
+    const y = role.y + yOffset;
+    add(ruuviInput(`ruuvi_${role.key}_${field}_in`, `${role.deviceName} ${role.label} · ${pathValue}`, role.service, `${role.deviceName} · ${role.label}`, pathValue, type, y, `ruuvi_${role.key}_${field}_topic`));
+    add(ruuviTopic(`ruuvi_${role.key}_${field}_topic`, `ruuvi.${role.key}.${field}`, y));
+  }
 }
 add({
   id: 'ruuvi_manual_adapter', type: 'function', z: tabId,
-  name: 'Ruuvi fest zuordnen · Decke /24 · Boden nicht konfiguriert',
+  name: 'Ruuvi fest zuordnen · Decke /24 · Boden /25',
   func: String.raw`
 const unwrap = value => value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'value') ? value.value : value;
 const parts = String(msg.topic || '').split('.');
-if (parts.length !== 3 || parts[0] !== 'ruuvi' || parts[1] !== 'ceiling') return null;
+if (parts.length !== 3 || parts[0] !== 'ruuvi' || !['ceiling', 'floor'].includes(parts[1])) return null;
+const role = parts[1];
 const field = parts[2];
 const allowed = ['temperature', 'humidity', 'pressure', 'batteryVoltage', 'deviceName'];
 if (!allowed.includes(field)) return null;
+const definitions = {
+    ceiling: { service: 'com.victronenergy.temperature/24', label: 'Ruuvi Decke', fallbackName: 'Ruuvi FB31' },
+    floor: { service: 'com.victronenergy.temperature/25', label: 'Ruuvi Boden', fallbackName: 'Ruuvi B7B8' }
+};
 const raw = unwrap(msg.payload);
 const stored = flow.get('camperManualTemperatureSensors') || {};
-const ceiling = Object.assign({ configured: true, service: 'com.victronenergy.temperature/24', label: 'Ruuvi Decke' }, stored.ceiling || {});
-if (field === 'deviceName') ceiling.deviceName = String(raw == null ? '' : raw).trim().slice(0, 96);
+for (const [key, definition] of Object.entries(definitions)) {
+    stored[key] = Object.assign({ configured: true, service: definition.service, label: definition.label, seen: 0 }, stored[key] || {}, { configured: true, service: definition.service, label: definition.label });
+}
+const current = stored[role];
+if (field === 'deviceName') current.deviceName = String(raw == null ? '' : raw).trim().slice(0, 96);
 else if (raw != null && raw !== '' && typeof raw !== 'boolean' && Number.isFinite(Number(raw))) {
     const value = Number(raw);
-    if (field !== 'temperature' || (value >= -50 && value <= 80)) ceiling[field] = value;
+    if (field !== 'temperature' || (value >= -50 && value <= 80)) current[field] = value;
 }
-if (field === 'temperature' && Number.isFinite(Number(ceiling.temperature))) ceiling.seen = Number(msg._camperSeen || Date.now());
-stored.ceiling = ceiling;
-stored.floor = Object.assign({ configured: false, service: '', label: 'Ruuvi Boden', seen: 0 }, stored.floor || {}, { configured: false, service: '', seen: 0 });
+if (field === 'temperature' && Number.isFinite(Number(current.temperature))) current.seen = Number(msg._camperSeen || Date.now());
 flow.set('camperManualTemperatureSensors', stored);
-flow.set('camperTemperatureAssignment', {
+const number = value => value !== null && value !== '' && typeof value !== 'undefined' && Number.isFinite(Number(value)) ? Number(value) : null;
+const assignment = {
     mode: 'manual',
     ceilingService: 'com.victronenergy.temperature/24',
-    ceilingDeviceName: ceiling.deviceName || 'Ruuvi FB31',
-    floorService: '',
-    floorConfigured: false,
+    ceilingDeviceName: stored.ceiling.deviceName || 'Ruuvi FB31',
+    floorService: 'com.victronenergy.temperature/25',
+    floorDeviceName: stored.floor.deviceName || 'Ruuvi B7B8',
+    floorConfigured: true,
     updatedAt: Date.now()
+};
+flow.set('camperTemperatureAssignment', assignment);
+const configuredAssignment = {
+    ceilingService: assignment.ceilingService,
+    floorService: assignment.floorService
+};
+flow.set('camperTemperatureDiscovery', {
+    assignment: configuredAssignment,
+    configuredAssignment,
+    candidates: Object.entries(definitions).map(([key, definition]) => ({
+        service: definition.service,
+        temperature: number(stored[key].temperature),
+        deviceName: stored[key].deviceName || definition.fallbackName,
+        customName: '',
+        productName: 'RuuviTag',
+        connection: 'Bluetooth LE',
+        deviceInstance: definition.service.split('/').pop(),
+        humidity: number(stored[key].humidity),
+        pressure: number(stored[key].pressure),
+        batteryVoltage: number(stored[key].batteryVoltage),
+        isRuuvi: true,
+        score: 300,
+        label: definition.label
+    }))
 });
-if (!Number.isFinite(Number(ceiling.temperature)) || !Number.isFinite(Number(ceiling.seen))) return null;
-const reading = {
-    temp: Math.round(Number(ceiling.temperature) * 10) / 10,
-    humidity: Number.isFinite(Number(ceiling.humidity)) ? Number(ceiling.humidity) : null,
-    pressure: Number.isFinite(Number(ceiling.pressure)) ? Number(ceiling.pressure) : null,
-    batteryVoltage: Number.isFinite(Number(ceiling.batteryVoltage)) ? Number(ceiling.batteryVoltage) : null,
-    seen: Number(ceiling.seen),
-    label: 'Ruuvi Decke',
-    source: 'cerbo',
-    service: 'com.victronenergy.temperature/24',
-    deviceName: ceiling.deviceName || 'Ruuvi FB31'
+const reading = key => {
+    const definition = definitions[key];
+    const value = stored[key];
+    const temperature = number(value.temperature);
+    const seen = number(value.seen);
+    return {
+        temp: temperature == null ? null : Math.round(temperature * 10) / 10,
+        humidity: number(value.humidity),
+        pressure: number(value.pressure),
+        batteryVoltage: number(value.batteryVoltage),
+        seen: seen == null ? 0 : seen,
+        label: definition.label,
+        source: 'cerbo',
+        service: definition.service,
+        deviceName: value.deviceName || definition.fallbackName,
+        configured: true
+    };
+};
+const ceiling = reading('ceiling');
+const floor = reading('floor');
+const now = Date.now();
+const fresh = [ceiling, floor].filter(value => value.temp != null && value.seen > 0 && now - value.seen >= 0 && now - value.seen < 180000);
+if (!fresh.length) return null;
+const average = key => {
+    const values = fresh.map(value => number(value[key])).filter(value => value != null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+};
+const comfort = {
+    temp: Math.round(average('temp') * 10) / 10,
+    humidity: average('humidity'),
+    pressure: average('pressure'),
+    batteryVoltage: null,
+    seen: Math.max(...fresh.map(value => value.seen)),
+    label: fresh.length === 2 ? 'Raumwert · Mittel Decke/Boden' : 'Raumwert · ' + fresh[0].label.replace('Ruuvi ', ''),
+    source: fresh.length === 2 ? 'calculated' : 'cerbo',
+    service: fresh.length === 2 ? 'virtual:ruuvi-comfort' : fresh[0].service,
+    deviceName: fresh.length === 2 ? 'Ruuvi FB31 + B7B8' : fresh[0].deviceName,
+    configured: true
 };
 return [[
-    { topic: 'ruuvi1', payload: reading },
-    { topic: 'ruuvi2', payload: { temp: null, humidity: null, pressure: null, batteryVoltage: null, seen: 0, label: 'Ruuvi Boden · nicht konfiguriert', source: 'manual', service: '', configured: false } },
-    { topic: 'ruuvi3', payload: Object.assign({}, reading, { label: 'Raumwert · Decke' }) }
+    { topic: 'ruuvi1', payload: ceiling },
+    { topic: 'ruuvi2', payload: floor },
+    { topic: 'ruuvi3', payload: comfort }
 ]];
 `,
   outputs: 1, timeout: 0, noerr: 0, initialize: '', finalize: '', libs: [],
-  x: 875, y: 8740, wires: [['12f9ef01215ad8d3']]
+  x: 875, y: 8860, wires: [['12f9ef01215ad8d3']]
 });
 add({
   id: 'ruuvi_manual_note', type: 'comment', z: tabId,
-  name: 'Ruuvi fest: FB31 = Decke (/24). Boden erst nach eigener DeviceInstance manuell ergänzen.',
-  info: 'Keine automatische Suche und keine dynamische Rollenvergabe. Die fünf nativen Victron-Eingänge lesen ausschließlich com.victronenergy.temperature/24. Der zweite RuuviTag bleibt bis zur ausdrücklichen Zuordnung offline.',
-  x: 525, y: 8880, wires: []
+  name: 'Ruuvi fest: FB31 = Decke (/24), B7B8 = Boden (/25).',
+  info: 'Keine automatische Suche und keine dynamische Rollenvergabe. Je fünf native Victron-Eingänge lesen ausschließlich com.victronenergy.temperature/24 beziehungsweise /25.',
+  x: 525, y: 9130, wires: []
 });
 
 // Der verbliebene Service-Status darf niemals überlappen. Ein hängender Lauf
@@ -1074,6 +1148,27 @@ if (!settings.func.includes('externalWifiTileEnabled')) {
 }
 const state = get('ada9353cc6ea4a4c');
 const climateAutomationController = get('ec5c5c0618d69359');
+const staleDcChannelAvailability = `const dcChannels = (cfg.switches || []).filter(item => item.visible !== false).map(item => {
+    const state = channel(item.channel);
+    return { id: item.id, name: item.name, channel: item.channel, on: Number(state.state) === 1, online: now - Number(state.seen || 0) <= staleMs };
+});`;
+const changedOnlyDcChannelAvailability = `const dcChannels = (cfg.switches || []).filter(item => item.visible !== false).map(item => {
+    const state = channel(item.channel);
+    // Victron switch inputs are changed-only. A known unchanged state remains
+    // authoritative and must not make local controls unavailable after 90 s.
+    const known = Number(state.seen || 0) > 0;
+    return { id: item.id, name: item.name, channel: item.channel, on: Number(state.state) === 1, online: known };
+});`;
+if (state.func.includes(staleDcChannelAvailability)) {
+  state.func = replaceOnce(
+    state.func,
+    staleDcChannelAvailability,
+    changedOnlyDcChannelAvailability,
+    'Changed-only STAR-Power-Verfügbarkeit'
+  );
+} else if (!state.func.includes(changedOnlyDcChannelAvailability)) {
+  throw new Error('STAR-Power-Verfügbarkeitsvertrag fehlt');
+}
 if (!state.func.includes('externalWifiTileEnabled')) {
   state.func = replaceOnce(
     state.func,
@@ -1279,7 +1374,7 @@ const cleanEmbeddedDefaults = source => source.replace(
     value.access = { scope: 'local-network', unrestricted: true };
     value.temperatureSensors = Object.assign({}, value.temperatureSensors || {}, {
       ceilingService: 'com.victronenergy.temperature/24',
-      floorService: ''
+      floorService: 'com.victronenergy.temperature/25'
     });
     const legacyClimateAutomation = value.climateAutomation || {};
     const climateControlMode = ['off', 'manual', 'auto'].includes(legacyClimateAutomation.controlMode)
@@ -1289,6 +1384,13 @@ const cleanEmbeddedDefaults = source => source.replace(
       controlMode: climateControlMode,
       enabled: climateControlMode === 'auto'
     });
+    value.coldProtection = Object.assign({
+      enabled: false,
+      startTemperature: 3,
+      stopTemperature: 5,
+      power: 4,
+      sensor: 'floor'
+    }, value.coldProtection || {}, { sensor: 'floor' });
     value.ventilation = Object.assign({}, value.ventilation || {}, {
       enabled: true,
       manualOn: false,
@@ -1341,11 +1443,11 @@ settings.func = cleanEmbeddedDefaults(settings.func)
   )
   .replace(
     "    cfg.temperatureSensors = {\n        ceilingService: text(cfg.temperatureSensors && cfg.temperatureSensors.ceilingService, '', 180),\n        floorService: text(cfg.temperatureSensors && cfg.temperatureSensors.floorService, '', 180),\n        stratificationWarning: number(cfg.temperatureSensors && cfg.temperatureSensors.stratificationWarning, 4, 1, 10)\n    };",
-    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: ''\n    };"
+    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: 'com.victronenergy.temperature/25'\n    };"
   )
   .replace(
     "    cfg.temperatureSensors = {\n        ceilingService: text(cfg.temperatureSensors && cfg.temperatureSensors.ceilingService, '', 180),\n        floorService: text(cfg.temperatureSensors && cfg.temperatureSensors.floorService, '', 180)\n    };",
-    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: ''\n    };"
+    "    cfg.temperatureSensors = {\n        ceilingService: 'com.victronenergy.temperature/24',\n        floorService: 'com.victronenergy.temperature/25'\n    };"
   )
   .replace(
     "    cfg.security.apiToken = text(cfg.security.apiToken, DEFAULTS.security.apiToken, 96);\n    cfg.security.allowReadWithoutToken = true;",
@@ -1532,6 +1634,45 @@ if (!settings.func.includes('const sourceClimateAutomation = object(source.clima
   );
 }
 
+if (!settings.func.includes('const sourceColdProtection = object(source.coldProtection)')) {
+  settings.func = replaceOnce(
+    settings.func,
+    `    cfg.temperatureSensors = {`,
+    `    const sourceColdProtection = object(source.coldProtection) ? source.coldProtection : {};
+    const coldProtectionStart = number(sourceColdProtection.startTemperature, 3, 0, 8);
+    cfg.coldProtection = {
+        enabled: boolean(sourceColdProtection.enabled, false),
+        startTemperature: coldProtectionStart,
+        stopTemperature: Math.max(coldProtectionStart + 1, number(sourceColdProtection.stopTemperature, 5, 1, 12)),
+        power: Math.round(number(sourceColdProtection.power, 4, 1, 10)),
+        // Der B7B8-Bodensensor ist die feste Frostschutzreferenz. Eine freie
+        // Zuordnung könnte den Schutz unbemerkt auf einen warmen Sensor legen.
+        sensor: 'floor'
+    };
+    cfg.temperatureSensors = {`,
+    'Zentrale validierte AUTOTERM-Kälteschutzkonfiguration'
+  );
+}
+
+// Neue sichere Standardfelder werden genau einmal in den persistenten Bestand
+// migriert. Ein normaler unveränderter Tick erzeugt danach keinen Flash-Write.
+settings.func = settings.func.replace(
+  "let changed = storedHardwareProfile !== DEFAULTS.mappings.hardwareProfile;",
+  "let changed = storedHardwareProfile !== DEFAULTS.mappings.hardwareProfile || JSON.stringify(cfg) !== JSON.stringify(stored);"
+);
+
+// Die beiden Ruuvi-Dienste sind hardwarefest: /24 Decke und /25 B7B8 Boden.
+settings.func = settings.func.replace(
+  `    cfg.temperatureSensors = {
+        ceilingService: 'com.victronenergy.temperature/24',
+        floorService: ''
+    };`,
+  `    cfg.temperatureSensors = {
+        ceilingService: 'com.victronenergy.temperature/24',
+        floorService: 'com.victronenergy.temperature/25'
+    };`
+);
+
 if (!climateAutomationController.func.includes("const controlMode = ['off', 'manual', 'auto']")) {
   climateAutomationController.func = replaceOnce(
     climateAutomationController.func,
@@ -1559,20 +1700,6 @@ const automationEnabled = controlMode === 'auto';`,
   );
   climateAutomationController.func = replaceOnce(
     climateAutomationController.func,
-    'const fanRunning = fan.on === true;',
-    "const fanRunning = fan.on === true;\nconst forceOff = controlMode === 'off';",
-    'Klima-Aus erzwingt Gerätestopp'
-  );
-  climateAutomationController.func = replaceOnce(
-    climateAutomationController.func,
-    `    if (state.heaterOwned && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });
-    if (state.fanOwned && fanRunning) fanMessages.push({ topic: 'ui', payload: { action: 'set', value: false, _climateAutomation: true } });`,
-    `    if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });
-    if ((state.fanOwned || forceOff) && fanRunning) fanMessages.push({ topic: 'ui', payload: { action: 'set', value: false, _climateAutomation: true } });`,
-    'Manuell gibt Automatikgeräte frei, Aus stoppt beide Geräte'
-  );
-  climateAutomationController.func = replaceOnce(
-    climateAutomationController.func,
     'state.enabled = settings.enabled === true;',
     "state.enabled = automationEnabled;\nstate.controlMode = controlMode;",
     'Klima-Betriebsart im Controllerzustand'
@@ -1584,6 +1711,50 @@ const automationEnabled = controlMode === 'auto';`,
     'Betriebsartwechsel aktualisiert Snapshot'
   );
 }
+
+if (!climateAutomationController.func.includes('const coldProtection = Object.assign({ enabled: false, startTemperature: 3')) {
+  climateAutomationController.func = replaceOnce(
+    climateAutomationController.func,
+    `const heaterMessages = [];
+const fanMessages = [];
+const powerMessages = [];`,
+    `const heaterMessages = [];
+const fanMessages = [];
+const powerMessages = [];
+const coldProtection = Object.assign({ enabled: false, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }, cfg.coldProtection || {});
+const heaterConfiguration = flow.get('cfg') || {};
+const frostSettings = coldProtection.enabled === true
+    ? [['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)], ['frostEnabled', true]]
+    : [['frostEnabled', false], ['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)]];
+for (const [key, value] of frostSettings) {
+    if (heaterConfiguration[key] !== value) heaterMessages.push({ topic: 'ui', payload: { action: 'set', key, value, _coldProtectionSync: true } });
+}
+const frostRunActive = coldProtection.enabled === true && heater.startedByFrost === true;`,
+    'Zentrale Kälteschutzeinstellungen an AUTOTERM spiegeln'
+  );
+  climateAutomationController.func = climateAutomationController.func
+    .replace(
+      "if (heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });",
+      "if (heaterRunning && heater.cooling !== true && !frostRunActive) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });"
+    )
+    .replace(
+      "if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });",
+      "if ((state.heaterOwned || forceOff) && heaterRunning && heater.cooling !== true && !frostRunActive) heaterMessages.push({ topic: 'ui', payload: { action: 'stop', _climateAutomation: true } });"
+    );
+}
+climateAutomationController.func = climateAutomationController.func.replace(
+  `const frostSettings = {
+    frostEnabled: coldProtection.enabled === true,
+    frostTemp: Number(coldProtection.startTemperature),
+    frostStop: Number(coldProtection.stopTemperature),
+    frostPower: Number(coldProtection.power)
+};
+for (const [key, value] of Object.entries(frostSettings)) {`,
+  `const frostSettings = coldProtection.enabled === true
+    ? [['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)], ['frostEnabled', true]]
+    : [['frostEnabled', false], ['frostTemp', Number(coldProtection.startTemperature)], ['frostStop', Number(coldProtection.stopTemperature)], ['frostPower', Number(coldProtection.power)]];
+for (const [key, value] of frostSettings) {`
+);
 
 if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)")) {
   state.func = replaceOnce(
@@ -1597,6 +1768,39 @@ if (!state.func.includes("controlMode: ['off', 'manual', 'auto'].includes(climat
                 : (climateAutomation.enabled === true ? 'auto' : 'manual'),`,
     'Klima-Betriebsart im Zustandssnapshot'
   );
+}
+
+if (!state.func.includes('const coldProtectionConfig = Object.assign({ enabled: false, startTemperature: 3')) {
+  state.func = replaceOnce(
+    state.func,
+    "const heaterCfg = flow.get('cfg') || {};",
+    "const heaterCfg = flow.get('cfg') || {};\nconst coldProtectionConfig = Object.assign({ enabled: false, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }, cfg.coldProtection || {});",
+    'Kälteschutzkonfiguration im Snapshot'
+  );
+  state.func = replaceOnce(
+    state.func,
+    `        heater: {`,
+    `        coldProtection: {
+            enabled: coldProtectionConfig.enabled === true,
+            active: heater.startedByFrost === true,
+            startTemperature: Number(coldProtectionConfig.startTemperature),
+            stopTemperature: Number(coldProtectionConfig.stopTemperature),
+            power: Number(coldProtectionConfig.power),
+            sensor: 'floor',
+            sensorName: heater.frostSensor || 'Ruuvi B7B8 · Boden',
+            sensorTemperature: heater.frostTemperature == null ? null : Number(heater.frostTemperature),
+            sensorOnline: floorTemperature.online === true,
+            heaterOnline: heater.serialReady === true && now - Number(heater.heaterSeen || 0) < 30000,
+            startBlocked: heater.startBlocked || ''
+        },
+        heater: {`,
+    'Kälteschutzstatus im öffentlichen Klimasnapshot'
+  );
+  state.func = state.func
+    .replace('frostEnabled: heaterCfg.frostEnabled === true,', 'frostEnabled: coldProtectionConfig.enabled === true,')
+    .replace('frostTemp: Number(heaterCfg.frostTemp || 5),', 'frostTemp: Number(coldProtectionConfig.startTemperature),')
+    .replace('frostStop: Number(heaterCfg.frostStop || 10),', 'frostStop: Number(coldProtectionConfig.stopTemperature),')
+    .replace('frostPower: Number(heaterCfg.frostPower || 4),', 'frostPower: Number(coldProtectionConfig.power),');
 }
 
 if (!settings.func.includes('let weatherLocationWrite = false;')) {
@@ -1706,7 +1910,7 @@ const cfg = flow.get('camperConfig') || ${defaultJson};
 const query = msg.req && msg.req.query || {};
 msg.headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
 const resource = String(msg._camperResource || '');
-if (resource === 'events') msg.payload = { ok: true, events: (flow.get('camperEvents') || []).slice().reverse() };
+if (resource === 'events') msg.payload = { ok: true, events: (flow.get('camperEvents') || []).slice(-25).reverse() };
 else if (resource === 'commands') msg.payload = { ok: true, commands: (flow.get('camperCommands') || []).slice().reverse() };
 else if (resource === 'diagnostics') msg.payload = { ok: true, diagnostics: ((flow.get('camperSnapshot') || {}).operations || {}).devices || [] };
 else if (resource === 'history') {
@@ -2128,6 +2332,37 @@ settingsUi.format = settingsUi.format.replace(
   '<label>Betriebsart<select v-model="cfg.climateAutomation.controlMode" @change="saveClimateAutomation"><option value="off">Aus</option><option value="manual">Manuell</option><option value="auto">Automatik</option></select></label>'
 );
 
+if (!settingsUi.format.includes('<h2>AUTOTERM-Kälteschutz</h2>')) {
+  settingsUi.format = settingsUi.format
+    .replace(
+      '  <section><h2>12 V Hauptkanäle: Namen, Kanal & Reihenfolge</h2>',
+      '  <section><h2>AUTOTERM-Kälteschutz</h2><p>Unabhängiger Frostschutz über den fest zugeordneten Ruuvi B7B8 am Boden. Der Start bleibt zusätzlich durch AUTOTERM-Initialisierung, aktuelle Batteriespannung und Unterspannungsschutz abgesichert.</p><div class="two"><label><input type="checkbox" v-model="cfg.coldProtection.enabled" @change="saveColdProtection"> Kälteschutz aktiv</label><label>Start unter °C<input type="number" min="0" max="8" step="1" v-model.number="cfg.coldProtection.startTemperature" @change="saveColdProtection"></label><label>Stopp ab °C<input type="number" min="1" max="12" step="1" v-model.number="cfg.coldProtection.stopTemperature" @change="saveColdProtection"></label><label>Heizstufe<input type="number" min="1" max="10" step="1" v-model.number="cfg.coldProtection.power" @change="saveColdProtection"></label><label>Fester Sensor<input value="Ruuvi B7B8 · Boden" disabled></label></div></section>\n  <section><h2>12 V Hauptkanäle: Namen, Kanal & Reihenfolge</h2>'
+    )
+    .replace(
+      'climateAutomation:{},devices:{}',
+      "climateAutomation:{},coldProtection:{enabled:false,startTemperature:3,stopTemperature:5,power:4,sensor:'floor'},devices:{}"
+    )
+    .replace(
+      'saveClimateAutomation(){this.patch({climateAutomation:this.cfg.climateAutomation})},',
+      'saveClimateAutomation(){this.patch({climateAutomation:this.cfg.climateAutomation})},saveColdProtection(){this.patch({coldProtection:this.cfg.coldProtection})},'
+    );
+}
+
+// Der Kälteschutz besitzt genau einen Schalter unter Einstellungen. Die
+// AUTOTERM-Technikseite zeigt dort nur noch Batterie- und Unterspannungsschutz,
+// damit ein lokaler Zweitschalter nicht gegen die zentrale Konfiguration läuft.
+const autotermSettingsUi = get('bc45ae1b0fc6611d');
+autotermSettingsUi.format = String(autotermSettingsUi.format || '')
+  .replace('<section class="at-card"><h3>Frost- & Batterieschutz</h3>', '<section class="at-card"><h3>Batterie- & Kälteschutz</h3><p class="soc-note">Kälteschutz wird zentral unter Einstellungen konfiguriert: Ruuvi B7B8 · Boden.</p>')
+  .replace(/\s*<label class="check"><input type="checkbox" v-model="cfg\.frostEnabled"[\s\S]*?<\/label>\s*<label>Start unter[\s\S]*?<\/label><label>Stop über[\s\S]*?<\/label>/, '');
+
+const operationsUi = get('976479fdec9530f1');
+operationsUi.format = String(operationsUi.format || '')
+  .replace('<div class="op-count"><b>{{ops.commands?.pendingCount||0}}</b> OFFEN · <b>{{ops.events?.unacknowledgedCount||0}}</b> ALARME</div>', '<div class="op-count"><b>{{ops.commands?.pendingCount||0}}</b> BEFEHLE OFFEN · MELDUNGSVERLAUF</div>')
+  .replace('(ops.events?.recent||[]).slice(0,12)', '(ops.events?.recent||[]).slice(0,25)')
+  .replace('<button v-if="!evt.acknowledgedAt&&(evt.level===\'warning\'||evt.level===\'critical\')" @click="ack(evt)">OK</button><strong v-else>{{evt.acknowledgedAt?\'BESTÄTIGT\':\'\'}}</strong>', '')
+  .replace("ack(e){this.sendCommand('system','acknowledge',e.id,{eventId:e.id})},", '');
+
 settingsUi.format = settingsUi.format
   .replace(/\s*<section class="design-choice">[\s\S]*?<\/section>\s*(?=<section>\s*<h2>System<\/h2>)/, '\n  ')
   .replace(",selectDesign(v){if(!['v1','v2'].includes(v))return;this.cfg.ui=Object.assign({},this.cfg.ui||{},{designVersion:v});this.patch({ui:{designVersion:v}})}", '')
@@ -2307,6 +2542,9 @@ state.func = state.func
     "if (clientsChanged) flow.set('camperWsClients', clients);\nreturn [{ payload: snapshot }, messages];",
     "if (clientsChanged) flow.set('camperWsClients', clients);\nif (!snapshotChanged) return null;\nreturn [{ payload: snapshot }, messages];"
   )
+  .replace('const retainedEvents = events.slice(-500);', 'const retainedEvents = events.slice(-25);')
+  .replace("unacknowledgedCount: events.filter(item => !item.acknowledgedAt && ['warning', 'critical'].includes(item.level)).length", 'unacknowledgedCount: 0')
+  .replace('recent: events.slice(-12).reverse()', 'recent: events.slice(-25).reverse()')
   .replace(/(?:if \(!snapshotChanged\) return null;\n)+/g, 'if (!snapshotChanged) return null;\n');
 
 if (!state.func.includes('let commandsChanged = false;')) {
@@ -2511,6 +2749,7 @@ const adapters = flow.get('camperAdapters') || {};
 adapters['maxxfan.state'] = {
     on: state.active,
     speed: state.active ? speedStep * 10 : 0,
+    selectedSpeed: speedStep * 10,
     speedStep,
     direction,
     mode: direction === 1 ? 'reverse' : 'forward',
@@ -2848,7 +3087,7 @@ console.log(JSON.stringify({
   publicPath,
   nodes: flows.length,
   dashboardBytes: dashboard.length,
-  ruuvi: 'fixed native com.victronenergy.temperature/24 · no discovery',
+  ruuvi: 'fixed native /24 ceiling + /25 floor · no discovery',
   serviceStatus: '60 s / process mutex',
   shelly: 'com.victronenergy.acload/50 /SwitchableOutput/0/State',
   orion: 'native com.victronenergy.alternator/289 · /Mode (1/4)',

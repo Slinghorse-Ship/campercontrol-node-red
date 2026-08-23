@@ -148,6 +148,18 @@ eingeschaltet.
 - Die Automatik schaltet standardmäßig ab 65 °C ein und bei 60 °C wieder aus.
 - Beide GX-Relais müssen in Venus OS auf `Manuell` konfiguriert sein.
 
+## AUTOTERM-Kälteschutz und Meldungen
+
+- Der Kälteschutz wird zentral unter Einstellungen konfiguriert und gilt für
+  Node-RED, GX/Remote Console und Ford SYNC gemeinsam.
+- Sicherer Standard: ausgeschaltet, Start unter 3 °C, Stopp ab 5 °C,
+  Heizstufe 4 und fest zugeordneter Ruuvi B7B8 am Boden (`/25`).
+- AUTOTERM-Initialisierung, aktuelle Batteriespannung und Unterspannungsschutz
+  bleiben vor jedem automatischen Start wirksam. `Klima Aus` beendet keinen
+  bereits vom aktivierten Kälteschutz übernommenen Heizlauf.
+- CamperControl-Meldungen sind ein bestätigungsfreier Verlauf. Persistiert und
+  über die API ausgegeben werden ausschließlich die letzten 25 Einträge.
+
 ## Transit-Horizon V2-only
 
 - Das Dashboard enthält ausschließlich Transit Horizon V2 mit Home, Licht,

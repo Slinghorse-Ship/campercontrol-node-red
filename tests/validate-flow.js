@@ -14,17 +14,18 @@ const previewPath = path.join(root, 'tools', 'preview', 'server.mjs');
 const packagePath = path.join(root, 'package.json');
 const starlinkHelperPath = path.join(root, 'cerbo-service', 'starlink-read-status.sh');
 const deviceHttpHelperPath = path.join(root, 'cerbo-service', 'device-http-bounded.py');
+const normalizeNewlines = value => value.replace(/\r\n?/g, '\n');
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const publicText = fs.readFileSync(publicPath, 'utf8');
-const dashboardTemplate = fs.readFileSync(dashboardPath, 'utf8');
-const dashboardV2MarkupSource = fs.readFileSync(dashboardV2MarkupPath, 'utf8');
+const dashboardTemplate = normalizeNewlines(fs.readFileSync(dashboardPath, 'utf8'));
+const dashboardV2MarkupSource = normalizeNewlines(fs.readFileSync(dashboardV2MarkupPath, 'utf8'));
 const transitDark = fs.readFileSync(transitDarkPath);
 const transitLight = fs.readFileSync(transitLightPath);
 const dashboardV2Markup = dashboardV2MarkupSource
   .replace('__CC2_TRANSIT_DARK_DATA_URI__', `data:image/png;base64,${transitDark.toString('base64')}`)
   .replace('__CC2_TRANSIT_LIGHT_DATA_URI__', `data:image/png;base64,${transitLight.toString('base64')}`)
   .trim();
-const dashboardV2Css = fs.readFileSync(dashboardV2CssPath, 'utf8').trim();
+const dashboardV2Css = normalizeNewlines(fs.readFileSync(dashboardV2CssPath, 'utf8')).trim();
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 const starlinkHelperSource = fs.readFileSync(starlinkHelperPath, 'utf8');
@@ -149,7 +150,7 @@ const hasImmediateDuplicateWrite = flows.filter(node => node.type === 'function'
 check(!hasImmediateDuplicateWrite, 'Keine unmittelbar doppelten Context-Writes verbleiben');
 check(!get('12f9ef01215ad8d3').func.includes('persistentStore') && (get('12f9ef01215ad8d3').func.match(/flow\.set\('autotermPersistent'/g) || []).length === 1, 'AUTOTERM besitzt genau einen persistenten Default-Store-Schreibpfad');
 check(!resourceSettingsFunction.includes("else flow.set('camperConfig'") && resourceSettingsFunction.includes("const persist = () => flow.set('camperConfig', cfg);"), 'Settings schreiben Konfiguration nur bei echter Änderung oder Migration');
-check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-500)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Events und Commands besitzen feste Retention einschließlich Legacy-Cleanup');
+check(resourceSnapshotFunction.includes('const retainedEvents = events.slice(-25)') && resourceSnapshotFunction.includes('commands.slice(-Math.max(10'), 'Die letzten 25 Events und die Commands besitzen feste Retention einschließlich Legacy-Cleanup');
 check(resourceSnapshotFunction.includes('const firstFreshIndex = list.findIndex') && !resourceSnapshotFunction.includes('list.shift()') && resourceSnapshotFunction.includes('list.splice(0, list.length - maxPoints)') && resourceSnapshotFunction.includes('recent: history.quarterHour.slice(-24)'), 'Historie wird linear nach Zeitfenster und harter Punktzahl beschnitten; der Snapshot enthält 24 Punkte');
 check(resourceSnapshotFunction.includes('3600000, 1440);') && resourceSnapshotFunction.includes('86400000, 2880);') && resourceSnapshotFunction.includes('86400000, 365);'), 'Historie ist hart auf 1.440 Minuten-, 2.880 Viertelstunden- und 365 Tagespunkte begrenzt');
 check(resourceSettingsFunction.includes('minuteHours, 24, 1, 24') && resourceSettingsFunction.includes('quarterDays, 30, 7, 30') && resourceSettingsFunction.includes('dailyDays, 365, 30, 365'), 'Historienkonfiguration bleibt bei höchstens 24 h, 30 d und 365 d');
@@ -171,7 +172,25 @@ check(!httpRequests.some(node => /dwd|mosmix|weather/i.test(`${node.id} ${node.n
 check(!httpRequests.some(node => targetsOf(node.id).includes(node.id)), 'Kein HTTP-Request besitzt einen direkten Retry-Selbstloop');
 
 check(sourceText === publicText, 'Master- und Import-Flow sind bytegleich');
-check(flows.length === 362, 'Master bleibt exakt der validierte 362-Node-Flow');
+check(flows.length === 372, 'Master bleibt exakt der validierte 372-Node-Flow');
+check(get('vanturtle_rest_command_exec').command.endsWith('vanturtle-post'), 'VanTurtle-Sollzustände nutzen den begrenzten REST-POST');
+check(get('e063b67ea21aacaf').wires[0].includes('vanturtle_rest_command_exec'), 'VanTurtle-Sollzustände laufen über begrenzten REST-Transport');
+check(get('30de81a830592ed2').func.includes('selectedSpeed: speedStep * 10'), 'VanTurtle trennt Sollgeschwindigkeit und Laufzustand');
+const vanturtleCommandFunction = get('e063b67ea21aacaf').func || '';
+const runVanturtleCommand = (payload, current = {}) => new Function('msg', 'flow', 'context', 'node', 'env', 'RED', vanturtleCommandFunction)(
+  { payload },
+  { get: key => key === 'camperAdapters' ? { 'maxxfan.state': current } : undefined },
+  {}, { warn: () => {} }, {}, {}
+);
+const decodeVanturtleRest = result => JSON.parse(Buffer.from(String(result?.[0]?.payload || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+check(JSON.stringify(decodeVanturtleRest(runVanturtleCommand({ action: 'set', value: true }, { selectedSpeed: 70 }))) === JSON.stringify({ speed: 7 })
+  && JSON.stringify(decodeVanturtleRest(runVanturtleCommand({ action: 'speed', value: 40 }))) === JSON.stringify({ speed: 4 })
+  && JSON.stringify(decodeVanturtleRest(runVanturtleCommand({ action: 'set', value: false }))) === JSON.stringify({ active: false })
+  && JSON.stringify(decodeVanturtleRest(runVanturtleCommand({ action: 'mode', value: 'reverse' }, { mode: 'forward' }))) === JSON.stringify({ direction: 1 }), 'VanTurtle-RJ45 nutzt Herstellerbefehle für Ein, Aus, Drehzahl und freie Richtungswahl');
+check(get('bd93a0e6de0de803').d === true, 'VanTurtle puffert keine periodischen WebSocket-get-Befehle während einer Trennung');
+check(!get('dec0785f657dc7d1').format.includes("fanToggle(){let item=this.s.climate?.fan,next=!item?.on;if(item)item.on=next"), 'MaxxFan Ein/Aus wird nicht optimistisch verfälscht');
+check(!get('dec0785f657dc7d1').format.includes('fanAuto(){')
+  && !get('dec0785f657dc7d1').format.includes('@click="fanAuto"'), 'MaxxFan zeigt ohne dokumentierte Solltemperatur keine irreführende Auto-Hold-Taste');
 check(packageJson.version === '4.5.0', 'Releaseversion ist 4.5.0');
 check(get('dec0785f657dc7d1').format === dashboard, 'Dashboard-Node entspricht der HTML-Quelle');
 check(get('3a031e0c8fe40790').repeat === '10', 'Fallback-Snapshot läuft alle 10 s');
@@ -510,6 +529,22 @@ check(targetsOf(dcSystemPowerInput.id).includes('d097a007d7fe4bbb')
   && get('d097a007d7fe4bbb').rules?.some(rule => rule.p === 'topic' && rule.to === 'dc.system.power')
   && snapshotFunction.includes("const dcSystemPower = sensor('dc.system.power');")
   && snapshotFunction.includes('        dcSystemPower,'), 'DC-SystemCalc-Wert wird additiv in den zentralen Snapshot übernommen');
+const sensorNormalizer = get('bb6668fefec83068').func || '';
+const normalizedDcValues = new Map();
+const normalizedDcFlow = {
+  get: key => normalizedDcValues.get(key),
+  set: (key, value) => normalizedDcValues.set(key, value)
+};
+const normalizedDcOutput = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', sensorNormalizer)(
+  { topic: 'dc.system.power', payload: 184, _camperSeen: 1234 }, normalizedDcFlow, {}, {}, {}, {}
+);
+check(normalizedDcOutput?.topic === 'tick'
+  && normalizedDcValues.get('camperSensors')?.['dc.system.power']?.value === 184
+  && normalizedDcValues.get('camperSensors')?.['dc.system.power']?.seen === 1234,
+  'DC-SystemCalc-Wert passiert den gemeinsamen Sensor-Normalisierer bis zum Snapshot-Gate');
+check(snapshotFunction.includes('const known = Number(state.seen || 0) > 0;')
+  && snapshotFunction.includes('online: known'),
+  'Changed-only STAR-Power-Zustände bleiben nach der ersten gültigen Rückmeldung bedienbar');
 check(nodesAt('com.victronenergy.tank/1', '/Remaining').length === 0, 'Nicht vorhandener Abwassertank wird nicht länger abgefragt');
 check(dashboardV2Markup.includes('{{signed(s.energy?.dcSystemPower)}} W') && dashboardV2Markup.includes('DC-Verbrauch'), 'Home zeigt den originalen DC-Systemwert statt Batterieladeleistung');
 check(!dashboardV2Markup.includes('{{signed(s.energy?.battery?.power)}} W'), 'Home verwechselt SmartShunt-Ladeleistung nicht mehr mit DC-Verbrauch');
@@ -651,15 +686,40 @@ check(settingsDashboard.includes('v-model="cfg.climateAutomation.controlMode"')
   && settingsDashboard.includes('<option value="auto">Automatik</option>')
   && !settingsDashboard.includes('Klimaautomatik aktiv'), 'Einstellungen verwenden denselben dreistufigen Klimavertrag statt eines widersprüchlichen Kontrollkästchens');
 
+check(migratedConfig.coldProtection?.enabled === false
+  && migratedConfig.coldProtection?.startTemperature === 3
+  && migratedConfig.coldProtection?.stopTemperature === 5
+  && migratedConfig.coldProtection?.power === 4
+  && migratedConfig.coldProtection?.sensor === 'floor', 'Migration ergänzt den sicheren ausgeschalteten Kälteschutzstandard 3/5 °C · Stufe 4 · Boden');
+const coldProtectionPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { coldProtection: {
+  enabled: true, startTemperature: 9, stopTemperature: 1, power: 99, sensor: 'ceiling'
+} } } }, designFlow, {}, {}, {}, {});
+const coldProtectionPatched = coldProtectionPatchOutput?.[0]?.payload?.config?.coldProtection || {};
+check(coldProtectionPatched.enabled === true
+  && coldProtectionPatched.startTemperature === 8
+  && coldProtectionPatched.stopTemperature === 9
+  && coldProtectionPatched.power === 10
+  && coldProtectionPatched.sensor === 'floor', 'Kälteschutz-Patch begrenzt Temperaturen und Stufe und hält B7B8/Boden fest');
+check(settingsDashboard.includes('<h2>AUTOTERM-Kälteschutz</h2>')
+  && settingsDashboard.includes('v-model="cfg.coldProtection.enabled"')
+  && settingsDashboard.includes('saveColdProtection(){this.patch({coldProtection:this.cfg.coldProtection})}')
+  && settingsDashboard.includes('Ruuvi B7B8 · Boden'), 'Der zentrale Web-Schalter und alle Kälteschutzwerte liegen unter Einstellungen');
+const autotermDashboard = get('bc45ae1b0fc6611d').format || '';
+check(!autotermDashboard.includes('v-model="cfg.frostEnabled"')
+  && autotermDashboard.includes('Kälteschutz wird zentral unter Einstellungen konfiguriert'), 'Die AUTOTERM-Technikseite besitzt keinen widersprüchlichen zweiten Frostschutzschalter');
+
 const climateControllerFunction = get('ec5c5c0618d69359').func || '';
 check(climateControllerFunction.includes("const controlMode = ['off', 'manual', 'auto']")
-  && climateControllerFunction.includes("const forceOff = controlMode === 'off'")
-  && snapshotFunction.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)"), 'Controller und Snapshot führen die drei Klima-Betriebsarten explizit');
-const runClimateController = ({ controlMode, heaterOwned = false, fanOwned = false, heaterRunning = false, fanRunning = false, temperature = 22 }) => {
+  && !climateControllerFunction.includes("const forceOff = controlMode === 'off'")
+  && snapshotFunction.includes("controlMode: ['off', 'manual', 'auto'].includes(climateAutomation.controlMode)"), 'Controller und Snapshot führen die drei Klima-Betriebsarten ohne Eingriff in manuelle Geräte');
+const runClimateController = ({ controlMode, heaterOwned = false, fanOwned = false, heaterRunning = false, fanRunning = false, temperature = 22, frostEnabled = false, startedByFrost = false, heaterConfigMatches = true }) => {
   const values = new Map([
-    ['camperConfig', { climateAutomation: { controlMode, enabled: controlMode === 'auto', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 } }],
-    ['state', { running: heaterRunning, cooling: false }],
-    ['cfg', { setpoint: 22 }],
+    ['camperConfig', {
+      climateAutomation: { controlMode, enabled: controlMode === 'auto', mode: 'auto', targetTemperature: 22, hysteresis: 1, fanSpeed: 50 },
+      coldProtection: { enabled: frostEnabled, startTemperature: 3, stopTemperature: 5, power: 4, sensor: 'floor' }
+    }],
+    ['state', { running: heaterRunning, cooling: false, startedByFrost }],
+    ['cfg', heaterConfigMatches ? { setpoint: 22, frostEnabled, frostTemp: 3, frostStop: 5, frostPower: 4 } : { setpoint: 22 }],
     ['camperAdapters', { 'maxxfan.state': { on: fanRunning, speed: 50 } }],
     ['climateAutomationState', { demand: 'idle', heaterOwned, fanOwned, roomTemperature: temperature, ceilingTemperature: temperature, sensorOnline: true, enabled: false, controlMode: 'manual' }]
   ]);
@@ -674,12 +734,32 @@ const releasedClimate = runClimateController({ controlMode: 'manual', heaterOwne
 check(releasedClimate.output?.[0]?.[0]?.payload?.action === 'stop'
   && releasedClimate.output?.[1]?.[0]?.payload?.value === false, 'Manuell beendet nur Geräte, die zuvor der Klimaautomatik gehörten');
 const offClimate = runClimateController({ controlMode: 'off', heaterRunning: true, fanRunning: true });
-check(offClimate.output?.[0]?.[0]?.payload?.action === 'stop'
-  && offClimate.output?.[1]?.[0]?.payload?.value === false
-  && offClimate.state?.controlMode === 'off', 'Aus stoppt AUTOTERM und MaxxFan zentral auf dem Cerbo');
+check(offClimate.output?.[0] == null && offClimate.output?.[1] == null
+  && offClimate.state?.controlMode === 'off', 'Klima-Aus lässt manuell gestartete AUTOTERM-/MaxxFan-Geräte unangetastet');
 const autoClimate = runClimateController({ controlMode: 'auto', temperature: 19 });
 check(autoClimate.output?.[0]?.some(message => message.payload?.action === 'start')
   && autoClimate.state?.demand === 'heat', 'Auto nutzt weiterhin die bestehende temperaturgeführte Cerbo-Regelung');
+const autoCooling = runClimateController({ controlMode: 'auto', temperature: 25 });
+check(autoCooling.output?.[1]?.length === 1
+  && autoCooling.output?.[1]?.[0]?.payload?.action === 'speed', 'Auto-Kühlung startet RJ45 ausschließlich mit dem idempotenten Geschwindigkeitsbefehl');
+check(!climateControllerFunction.includes("payload: { action: 'mode'")
+  && get('dec0785f657dc7d1').format.includes("@click=\"fanSetMode('reverse')\"")
+  && get('dec0785f657dc7d1').format.includes("@click=\"fanSetMode('forward')\""), 'Zuluft und Abluft bleiben auch bei aktiver Klimaautomatik ausschließlich manuell wählbar');
+const coldProtectionOffMode = runClimateController({ controlMode: 'off', heaterRunning: true, frostEnabled: true, startedByFrost: true });
+check(coldProtectionOffMode.output?.[0] == null
+  && coldProtectionOffMode.output?.[1] == null, 'Klima-Aus beendet eine vom aktivierten Kälteschutz gestartete AUTOTERM-Heizung nicht');
+const coldProtectionSync = runClimateController({ controlMode: 'manual', frostEnabled: true, heaterConfigMatches: false });
+check(coldProtectionSync.output?.[0]?.map(message => message.payload?.key).join(',') === 'frostTemp,frostStop,frostPower,frostEnabled'
+  && coldProtectionSync.output?.[0]?.every(message => message.payload?._coldProtectionSync === true), 'Kälteschutzwerte werden vor dem Aktivieren sicher und vollständig an den AUTOTERM-Kern gespiegelt');
+check(snapshotFunction.includes('coldProtection: {')
+  && snapshotFunction.includes("sensor: 'floor'")
+  && snapshotFunction.includes("sensorName: heater.frostSensor || 'Ruuvi B7B8 · Boden'"), 'Der öffentliche Klimasnapshot liefert Kälteschutzstatus und festen Bodensensor');
+const operationsDashboard = get('976479fdec9530f1').format || '';
+check(snapshotFunction.includes('const retainedEvents = events.slice(-25)')
+  && snapshotFunction.includes('recent: events.slice(-25).reverse()')
+  && operationsDashboard.includes('(ops.events?.recent||[]).slice(0,25)')
+  && !operationsDashboard.includes("sendCommand('system','acknowledge'")
+  && !operationsDashboard.includes('evt.acknowledgedAt'), 'Meldungen sind ein bestätigungsfreier Verlauf mit maximal 25 gespeicherten Einträgen');
 
 const lightingPatchOutput = runSettings({ topic: 'ui.settings', payload: { action: 'patch', patch: { lightingScenes: {
   camping: { inside_main: 42.4, outside_front_amber: 37, outside_left: -9, unknown_light: 80 },
@@ -854,25 +934,58 @@ check(staleScanOutput?.[2]?.payload === 'scan' && staleScanValues.get('indevoltS
 
 // Ruuvi: feste native Service-Zuordnung, kein Discovery/Exec/Cache.
 const ruuviNodes = {
-  ruuvi_ceiling_temperature_in: ['/Temperature', 'victron-input-temperature'],
-  ruuvi_ceiling_humidity_in: ['/Humidity', 'victron-input-custom'],
-  ruuvi_ceiling_pressure_in: ['/Pressure', 'victron-input-custom'],
-  ruuvi_ceiling_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom'],
-  ruuvi_ceiling_deviceName_in: ['/DeviceName', 'victron-input-custom']
+  ruuvi_ceiling_temperature_in: ['/Temperature', 'victron-input-temperature', 'com.victronenergy.temperature/24', false],
+  ruuvi_ceiling_humidity_in: ['/Humidity', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_pressure_in: ['/Pressure', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_ceiling_deviceName_in: ['/DeviceName', 'victron-input-custom', 'com.victronenergy.temperature/24', true],
+  ruuvi_floor_temperature_in: ['/Temperature', 'victron-input-temperature', 'com.victronenergy.temperature/25', false],
+  ruuvi_floor_humidity_in: ['/Humidity', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_pressure_in: ['/Pressure', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_batteryVoltage_in: ['/BatteryVoltage', 'victron-input-custom', 'com.victronenergy.temperature/25', true],
+  ruuvi_floor_deviceName_in: ['/DeviceName', 'victron-input-custom', 'com.victronenergy.temperature/25', true]
 };
-for (const [id, [pathValue, expectedType]] of Object.entries(ruuviNodes)) {
+for (const [id, [pathValue, expectedType, service, onlyChanges]] of Object.entries(ruuviNodes)) {
   const node = get(id);
   check(node.type === expectedType, `${id} nutzt ${expectedType}`);
-  check(node.service === 'com.victronenergy.temperature/24', `${id} ist fest auf Temperaturdienst /24`);
+  check(node.service === service, `${id} ist fest auf ${service}`);
   check(node.path === pathValue, `${id} liest ${pathValue}`);
-  check(node.onlyChanges === true, `${id} sendet nur Änderungen`);
+  check(node.onlyChanges === onlyChanges, `${id} nutzt die erwartete Wiederholungsstrategie`);
 }
-check(get('ruuvi_manual_adapter').type === 'function', 'Ruuvi-FB31-Werte werden ohne Discovery normalisiert');
+check(get('ruuvi_manual_adapter').type === 'function', 'Ruuvi-FB31-/B7B8-Werte werden ohne Discovery normalisiert');
 check(get('ruuvi_manual_adapter').func.includes("ceilingService: 'com.victronenergy.temperature/24'"), 'Deckenrolle ist fest /24');
-check(get('ruuvi_manual_adapter').func.includes("floorService: ''"), 'Bodenrolle bleibt unkonfiguriert/offline');
+check(get('ruuvi_manual_adapter').func.includes("floorService: 'com.victronenergy.temperature/25'"), 'Bodenrolle ist fest /25');
+check(get('ruuvi_manual_adapter').func.includes("floorConfigured: true"), 'Bodenrolle wird als konfiguriert veröffentlicht');
+check(get('ruuvi_manual_adapter').func.includes("flow.set('camperTemperatureDiscovery'"), 'Feste Rollen ersetzen alte Discovery-Metadaten');
 check(!flows.some(node => String(node.id).includes('ruuvi_discovery')), 'Keine Ruuvi-Discovery-Nodes');
 check(!sourceText.includes('read-temperature-sensors.sh'), 'Kein Ruuvi-Shellprozess');
 check(!sourceText.includes('/victron/cache'), 'Kein Ruuvi-Cache-Polling');
+
+const ruuviValues = new Map();
+const ruuviFlow = { get: key => ruuviValues.get(key), set: (key, value) => ruuviValues.set(key, value) };
+const runRuuvi = new Function('msg', 'flow', 'context', 'node', 'env', 'RED', get('ruuvi_manual_adapter').func || '');
+const ruuviSeen = Date.now();
+const feedRuuvi = (role, values) => {
+  let output = null;
+  for (const [field, payload] of Object.entries(values)) {
+    const result = runRuuvi({ topic: `ruuvi.${role}.${field}`, payload, _camperSeen: ruuviSeen }, ruuviFlow, {}, {}, {}, {});
+    if (result) output = result;
+  }
+  return output;
+};
+feedRuuvi('ceiling', { temperature: 24.4, humidity: 56.6, pressure: 1010.5, batteryVoltage: 2.696, deviceName: 'Ruuvi FB31' });
+const ruuviOutput = feedRuuvi('floor', { temperature: 22.2, humidity: 60.0, pressure: 1011.0, batteryVoltage: 3.298, deviceName: 'Ruuvi B7B8' });
+const ruuviMessages = Array.isArray(ruuviOutput?.[0]) ? ruuviOutput[0] : [];
+const ruuviCeiling = ruuviMessages.find(message => message.topic === 'ruuvi1')?.payload;
+const ruuviFloor = ruuviMessages.find(message => message.topic === 'ruuvi2')?.payload;
+const ruuviComfort = ruuviMessages.find(message => message.topic === 'ruuvi3')?.payload;
+const ruuviAssignment = ruuviValues.get('camperTemperatureAssignment') || {};
+const ruuviDiscovery = ruuviValues.get('camperTemperatureDiscovery') || {};
+check(ruuviCeiling?.service === 'com.victronenergy.temperature/24' && ruuviCeiling?.deviceName === 'Ruuvi FB31', 'FB31 wird als Deckenwert veröffentlicht');
+check(ruuviFloor?.service === 'com.victronenergy.temperature/25' && ruuviFloor?.deviceName === 'Ruuvi B7B8' && ruuviFloor?.temp === 22.2, 'B7B8 wird als Bodenwert veröffentlicht');
+check(ruuviComfort?.temp === 23.3 && ruuviComfort?.source === 'calculated', 'Komfortwert ist der Mittelwert aus Decke und Boden');
+check(ruuviAssignment.floorService === 'com.victronenergy.temperature/25' && ruuviAssignment.floorConfigured === true, 'Temperaturzuordnung enthält den aktiven Bodensensor');
+check(ruuviDiscovery.assignment?.floorService === 'com.victronenergy.temperature/25' && ruuviDiscovery.candidates?.length === 2, 'API-Metadaten enthalten beide festen Ruuvi-Dienste');
 
 check(get('camper_service_status_tick').repeat === '60', 'Service-Status läuft höchstens alle 60 s');
 check(get('camper_service_status_guard').type === 'function', 'Service-Status besitzt eine Prozesssperre');
@@ -984,6 +1097,19 @@ check(separatedEnergyFixture?.battery?.power === -52
   && separatedEnergyFixture?.dcSystemPower === 184, 'Fixture hält SmartShunt-Leistung und Victron-DC-Gesamtverbrauch getrennt');
 check(separatedEnergyFixture?.totalSolarPower === 318
   && separatedEnergyFixture?.indevolt?.solarPower === 777, 'Fixture schließt INDEVOLT aus Solar gesamt aus und veröffentlicht es weiterhin separat');
+const unchangedSwitchFixture = runStateAggregator({}, {
+  starpowerState: { channels: {
+    2: { state: 0, seen: energyFixtureNow - 10 * 60 * 1000 },
+    5: { state: 0, seen: energyFixtureNow - 10 * 60 * 1000 }
+  } }
+})?.ui?.quickAccess || [];
+const unchangedPump = unchangedSwitchFixture.find(item => item.id === 'switch:water_pump');
+const unchangedStarlink = unchangedSwitchFixture.find(item => item.id === 'switch:starlink');
+check(unchangedPump?.available === true && unchangedPump?.active === false
+  && unchangedPump?.command?.value === true
+  && unchangedStarlink?.available === true && unchangedStarlink?.active === false
+  && unchangedStarlink?.command?.value === 1,
+  'Unveränderte ausgeschaltete Wasserpumpe und Starlink bleiben lokal einschaltbar');
 
 // Dynamische Persistenzregression: Auch ein massiver identischer Burst darf
 // den großen Snapshot und die gebundenen UI-Ausgänge nur einmal markieren.
