@@ -142,6 +142,15 @@ const configureSnapshotRateLimit = (id, name, rate = '1') => {
 configureSnapshotRateLimit('d36a1adac492ce3e', 'STAR-Power Snapshot maximal 1/s');
 configureSnapshotRateLimit('cff2c4d32221ccd8', 'Gesamt-Snapshot maximal 2/s', '2');
 
+// Der eingebaute Frischwassertank liegt auf diesem Cerbo als Tank-
+// DeviceInstance 21 vor. Die bisherige Instanz 0 existiert nicht und lieferte
+// deshalb weder /Level noch /Remaining an den CamperControl-Snapshot.
+for (const id of ['a8cf723f53aef94f', '88e72ed5ed3b2f67']) {
+  const input = get(id);
+  input.service = 'com.victronenergy.tank/21';
+  input.serviceObj = { service: 'com.victronenergy.tank/21', name: 'Frischwassertank' };
+}
+
 // Dieses Fahrzeug besitzt keinen Abwassertanksensor. Die beiden alten,
 // ungenutzten Eingänge werden count-neutral durch den zentralen Wetterpfad
 // ersetzt. Der Provider gehört dem CamperControl-D-Bus-Dienst; Node-RED liest

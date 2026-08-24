@@ -22,8 +22,8 @@ async function responseJson(response) {
 
 async function main() {
   const candidate = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-  if (!Array.isArray(candidate) || candidate.length !== 371) {
-    throw new Error(`Refusing deployment: expected 371 nodes, got ${Array.isArray(candidate) ? candidate.length : 'invalid JSON'}`);
+  if (!Array.isArray(candidate) || candidate.length !== 372) {
+    throw new Error(`Refusing deployment: expected 372 nodes, got ${Array.isArray(candidate) ? candidate.length : 'invalid JSON'}`);
   }
 
   const flowResponse = await fetch(`${baseUrl}/flows`, {

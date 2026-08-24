@@ -4102,11 +4102,11 @@
     "id": "a8cf723f53aef94f",
     "type": "victron-input-custom",
     "z": "b7be72c8b69bf30e",
-    "service": "com.victronenergy.tank/0",
+    "service": "com.victronenergy.tank/21",
     "path": "/Level",
     "serviceObj": {
-      "service": "com.victronenergy.tank/0",
-      "name": "Frischwasser Füllstand"
+      "service": "com.victronenergy.tank/21",
+      "name": "Frischwassertank"
     },
     "pathObj": {
       "path": "/Level",
@@ -4162,11 +4162,11 @@
     "id": "88e72ed5ed3b2f67",
     "type": "victron-input-custom",
     "z": "b7be72c8b69bf30e",
-    "service": "com.victronenergy.tank/0",
+    "service": "com.victronenergy.tank/21",
     "path": "/Remaining",
     "serviceObj": {
-      "service": "com.victronenergy.tank/0",
-      "name": "Frischwasser Restmenge"
+      "service": "com.victronenergy.tank/21",
+      "name": "Frischwassertank"
     },
     "pathObj": {
       "path": "/Remaining",

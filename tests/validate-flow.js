@@ -546,6 +546,9 @@ check(snapshotFunction.includes('const known = Number(state.seen || 0) > 0;')
   && snapshotFunction.includes('online: known'),
   'Changed-only STAR-Power-Zustände bleiben nach der ersten gültigen Rückmeldung bedienbar');
 check(nodesAt('com.victronenergy.tank/1', '/Remaining').length === 0, 'Nicht vorhandener Abwassertank wird nicht länger abgefragt');
+check(nodesAt('com.victronenergy.tank/21', '/Level').length === 1
+  && nodesAt('com.victronenergy.tank/21', '/Remaining').length === 1,
+  'Frischwasser verwendet die reale Cerbo-Tankinstanz 21');
 check(dashboardV2Markup.includes('{{signed(s.energy?.dcSystemPower)}} W') && dashboardV2Markup.includes('DC-Verbrauch'), 'Home zeigt den originalen DC-Systemwert statt Batterieladeleistung');
 check(!dashboardV2Markup.includes('{{signed(s.energy?.battery?.power)}} W'), 'Home verwechselt SmartShunt-Ladeleistung nicht mehr mit DC-Verbrauch');
 check(dashboard.includes("v2BatteryFlow(){")
